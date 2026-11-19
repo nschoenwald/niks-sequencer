@@ -16,17 +16,27 @@ export async function decodeWebmFrames({ metadata, frameData, codec }) {
 		codedWidth: metadata.codecSize.width,
 		codedHeight: metadata.codecSize.height,
 		colorSpace: {},
+		// Every decoded frame is kept until flush() resolves. Hardware decoders (used for VP9 in Chrome) only
+		// have a small pool of output frames, and stall or get reclaimed ("Codec reclaimed") once it runs out.
+		// Conversion happens once and is cached, so software decoding costs little.
+		hardwareAcceleration: "prefer-software",
 	};
-	if (!VideoDecoder.isConfigSupported(config)) {
-		return Promise.reject("Config not supported");
+	const support = await VideoDecoder.isConfigSupported(config);
+	if (!support?.supported) {
+		throw new Error("Config not supported");
 	}
 	const renderedFrames = [];
+	// Decoder errors arrive in the error callback, not as a rejection of flush(); reject this instead,
+	// so a failed decode ends the job with a "Cancel" response instead of hanging forever.
+	let rejectDecode;
+	const decodeFailed = new Promise((_, reject) => (rejectDecode = reject));
+	decodeFailed.catch(() => {});
 	const decoder = new VideoDecoder({
 		output: (frame) => {
 			renderedFrames.push(frame);
 		},
 		error: (error) => {
-			throw error.message;
+			rejectDecode(error instanceof Error ? error : new Error(String(error?.message ?? error)));
 		},
 	});
 	try {
@@ -40,7 +50,7 @@ export async function decodeWebmFrames({ metadata, frameData, codec }) {
 			});
 			decoder.decode(chunk);
 		}
-		await decoder.flush();
+		await Promise.race([decoder.flush(), decodeFailed]);
 		return renderedFrames;
 	} catch (err) {
 		for (const frame of renderedFrames) frame.close();

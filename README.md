@@ -1,4 +1,37 @@
-# Sequencer
+# Nik's Sequencer
+
+A maintained fork of [Sequencer](https://github.com/fantasycalendar/FoundryVTT-Sequencer) by [Fantasy Computerworks](http://fantasycomputer.works/), with bug fixes and performance improvements on top of Sequencer 4.3.0.
+
+- **Same module id (`sequencer`).** Modules that depend on Sequencer (Automated Animations, Trigger Animations and many more) work with it unchanged. It replaces Sequencer: install one or the other, not both.
+- **Same API and documentation.** Everything in the [Sequencer wiki](https://fantasycomputer.works/FoundryVTT-Sequencer/) applies.
+- **Versions** are the upstream version plus `.nX` (for example `4.3.0.n5`). See the [changelog](CHANGELOG.md) for what changed.
+
+## Installation
+
+Uninstall Sequencer first (your effects and settings stay in the world), then paste this manifest link into Foundry's **Install Module** dialog:
+
+```
+https://github.com/nschoenwald/niks-sequencer/releases/latest/download/module.json
+```
+
+To go back to the original, uninstall this fork and install Sequencer from the Foundry package list.
+
+## What this fork changes
+
+- Fixes for open upstream bug reports, among them: persistent effects and sounds placed on a scene location not coming back after a reload, located sounds staying silent on Foundry V14, `.alwaysForGMs()` ignoring `.volume()`, `.crosshair().persist()` on V14, `bindVisibility` on templates and regions, VP9 spritesheet conversion hanging in Chrome, `.waitUntilFinished()` not waiting for token fades.
+- Rendering optimizations (can be turned off with the **Enable Rendering Optimizations** setting): mask caching, skipping effects with filters or masks while off-screen, no video uploads for hidden or off-screen video effects.
+- Cheaper per-frame work for sounds placed on the canvas and for attached `.stretchTo()` effects.
+- `.motion()` sections can be played with `.play({ remote: true })`.
+
+Bug reports for this fork: [issues](https://github.com/nschoenwald/niks-sequencer/issues). Please don't report problems with the fork to the upstream project.
+
+---
+
+The original Sequencer README follows.
+
+---
+
+# Sequencer (original README)
 
 ![Latest Release Download Count](https://img.shields.io/github/downloads/fantasycalendar/FoundryVTT-Sequencer/latest/module.zip?color=2b82fc&label=DOWNLOADS&style=for-the-badge) [![Forge Installs](https://img.shields.io/badge/dynamic/json?label=Forge%20Installs&query=package.installs&suffix=%25&url=https%3A%2F%2Fforge-vtt.com%2Fapi%2Fbazaar%2Fpackage%2Fsequencer&colorB=006400&style=for-the-badge)](https://forge-vtt.com/bazaar#package=sequencer) ![Foundry Verified Version](https://img.shields.io/badge/dynamic/json.svg?url=https%3A%2F%2Fgithub.com%2Ffantasycalendar%2FFoundryVTT-Sequencer%2Freleases%2Flatest%2Fdownload%2Fmodule.json&label=Foundry%20Verified%20Version&query=$.compatibility.verified&colorB=orange&style=for-the-badge) ![Latest Version](https://img.shields.io/badge/dynamic/json.svg?url=https%3A%2F%2Fgithub.com%2Ffantasycalendar%2FFoundryVTT-Sequencer%2Freleases%2Flatest%2Fdownload%2Fmodule.json&label=Latest%20Release&prefix=v&query=$.version&colorB=red&style=for-the-badge)
 
@@ -36,7 +69,7 @@ Sequencer is a powerful module that lets you play visual effects in your scenes,
 * [Jack Kerouac's Animated Spell Effects](https://foundryvtt.com/packages/animated-spell-effects)
 * [Jack Kerouac's Animated Cartoon Spell Effets](https://foundryvtt.com/packages/animated-spell-effects-cartoon)
 
-## [Changelog](docs/changelog.md)
+## [Changelog](CHANGELOG.md)
 
 ## Installation
 

@@ -13,6 +13,7 @@ import { SequencerSpriteManager } from "./sequencer-sprite-manager.js";
 import CrosshairsPlaceable from "../modules/sequencer-crosshair/CrosshairsPlaceable.js";
 import PluginsManager from "../utils/plugins-manager.js";
 import { is_real_number } from "../lib/lib.js";
+import RenderOptimizations from "../lib/render-optimizations.js";
 
 const hooksManager = {
 	_byHook: new Map(),
@@ -1523,6 +1524,11 @@ export default class CanvasEffect extends PIXI.Container {
 		this._ticker = null;
 		this._perEffectTickHandlers = null;
 
+		// Return cached mask textures to the filter texture pool
+		for (const filter of this.sprite?.filters ?? []) {
+			if (filter instanceof MaskFilter) filter.releaseCache();
+		}
+
 		SequencerAnimationEngine.endAnimations(this.id);
 
 		if (this._maskContainer) this._maskContainer.destroy({ children: true });
@@ -1713,6 +1719,7 @@ export default class CanvasEffect extends PIXI.Container {
 		if (this._destroyed || this._isEnding) return;
 		if (!this.renderable || !this.visible || this.worldAlpha <= 0) return;
 		if (!CanvasEffect._sceneHasActiveRegionHighlights()) return;
+		if (RenderOptimizations.enabled && this._isOutsideRenderTarget(renderer)) return;
 		try {
 			this._renderSubtreeAsVoid(renderer, this, null);
 		} catch (err) {
@@ -1997,11 +2004,98 @@ export default class CanvasEffect extends PIXI.Container {
 	}
 
 	/**
+	 * Skips rendering (including all filter and mask passes) of effects that
+	 * have filters or masks and are completely outside the current render
+	 * target. PIXI's own `cullable` is ignored for containers with filters or
+	 * masks, and an off-screen filter still allocates render targets and draws
+	 * its masks every frame.
+	 *
+	 * @param {PIXI.Renderer} renderer
+	 * @override
+	 */
+	render(renderer) {
+		if (RenderOptimizations.enabled && this.visible && this.renderable && this.worldAlpha > 0
+			&& this._isOutsideRenderTarget(renderer)) return;
+		super.render(renderer);
+	}
+
+	/**
+	 * Sum of the padding of all enabled filters that apply to this effect, or
+	 * -1 if there are none (and no masks), i.e. nothing worth culling.
+	 *
+	 * @returns {number}
+	 * @private
+	 */
+	_expensivePassPadding() {
+		let found = false;
+		let padding = 0;
+		const add = (filterList) => {
+			if (!filterList?.length) return;
+			for (let i = 0; i < filterList.length; i++) {
+				const filter = filterList[i];
+				if (!filter?.enabled) continue;
+				found = true;
+				padding += filter.padding ?? 0;
+			}
+		};
+		add(this.filters);
+		add(this.sprite?.filters);
+		if (this._mask || this.sprite?._mask) found = true;
+		return found ? padding : -1;
+	}
+
+	/**
+	 * @param {PIXI.Renderer} renderer
+	 * @returns {boolean} true if this effect has filters/masks and its padded
+	 *   bounds don't intersect the active render target
+	 * @private
+	 */
+	_isOutsideRenderTarget(renderer) {
+		if (this.data?.screenSpace || this.data?.screenSpaceAboveUI) return false;
+		const padding = this._expensivePassPadding();
+		if (padding < 0) return false;
+		const sourceFrame = renderer.renderTexture.sourceFrame;
+		if (!(sourceFrame.width > 0 && sourceFrame.height > 0)) return false;
+		const bounds = this.getBounds(true, (this._cullBoundsRect ??= new PIXI.Rectangle()));
+		if (!(bounds.width > 0 && bounds.height > 0)) return false;
+		bounds.pad(padding);
+		const projection = renderer.projection.transform;
+		return !sourceFrame.intersects(bounds, projection ?? undefined);
+	}
+
+	/**
+	 * Whether this effect could be seen on screen this frame. Used to stop
+	 * uploading video frames of effects that are hidden or off-screen; the
+	 * video itself keeps playing so timing and loops stay correct.
+	 *
+	 * @returns {boolean}
+	 * @private
+	 */
+	_isPotentiallyVisibleOnScreen() {
+		if (this.data?.screenSpace || this.data?.screenSpaceAboveUI) return true;
+		if (!this.worldVisible || !this.renderable || this.worldAlpha <= 0) return false;
+		const screen = canvas?.app?.renderer?.screen;
+		if (!screen) return true;
+		const bounds = this.getBounds(true, (this._videoBoundsRect ??= new PIXI.Rectangle()));
+		if (!(bounds.width > 0 && bounds.height > 0)) return true;
+		bounds.pad(Math.max(0, this._expensivePassPadding()));
+		return bounds.intersects(screen);
+	}
+
+	_videoVisibilityTick() {
+		const sprite = this.sprite;
+		if (!sprite || sprite.destroyed || !sprite.hasVideoAsset) return;
+		sprite.setVideoUploadsEnabled(!RenderOptimizations.enabled || this._isPotentiallyVisibleOnScreen());
+	}
+
+	/**
 	 * Add Ticker handler to check for updates to attached objects
 	 *
 	 * @private
 	 */
 	_registerTickers() {
+		this._addToTicker(this._videoVisibilityTick);
+
 		const handlers = [];
 
 		//stretchTo && attached to stretchTo
@@ -2270,11 +2364,8 @@ export default class CanvasEffect extends PIXI.Container {
 		// only set filter and fade effects when a faded version should actually be shown
 		if (this.shouldShowFadedVersion) {
 			this.alpha = game.settings.get(CONSTANTS.MODULE_NAME, "user-effect-opacity") / 100;
-			this.filters = [
-				new PIXI.ColorMatrixFilter({
-					saturation: -1,
-				}),
-			];
+			// A `new PIXI.ColorMatrixFilter({ saturation: -1 })` used to be added here. PIXI's constructor takes no
+			// options, so it was an identity matrix that cost a full filter pass every frame without changing anything.
 		}
 
 		this.updateElevation();
@@ -2904,31 +2995,32 @@ export default class CanvasEffect extends PIXI.Container {
 			}
 
 			if (this.data.attachTo?.bindVisibility) {
-				hooksManager.addHook(
-					this.uuid,
-					"sightRefresh",
-					() => {
-						if (this._ended) return;
-						const sourceVisible =
-							this.source
-							&& isAttachedPlaceableVisible(this.source)
-							&& !this.sourceMesh?.occluded;
-						const sourceHidden =
-							this.sourceDocument && (this.sourceDocument?.hidden ?? false);
-						const targetVisible =
-							this.target
-							&& isAttachedPlaceableVisible(this.target)
-							&& (!attachedToTarget || (this.targetMesh?.occluded ?? true));
-						this._baseRenderable =
-							baseRenderable &&
-							(!sourceHidden || game.user.isGM) &&
-							(sourceVisible || targetVisible) &&
-							this._checkWallCollisions();
-						this.alpha = sourceVisible && sourceHidden ? 0.5 : 1.0;
-						this._recomputeRenderable();
-					},
-					{ effect: this, callNow: true }
-				);
+				const refreshVisibility = () => {
+					if (this._ended) return;
+					const sourceVisible =
+						this.source
+						&& isAttachedPlaceableVisible(this.source)
+						&& !this.sourceMesh?.occluded;
+					const sourceHidden =
+						this.sourceDocument && (this.sourceDocument?.hidden ?? false);
+					const targetVisible =
+						this.target
+						&& isAttachedPlaceableVisible(this.target)
+						&& (!attachedToTarget || (this.targetMesh?.occluded ?? true));
+					this._baseRenderable =
+						baseRenderable &&
+						(!sourceHidden || game.user.isGM) &&
+						(sourceVisible || targetVisible) &&
+						this._checkWallCollisions();
+					this.alpha = sourceVisible && sourceHidden ? 0.5 : 1.0;
+					this._recomputeRenderable();
+				};
+				hooksManager.addHook(this.uuid, "sightRefresh", refreshVisibility, { effect: this, callNow: true });
+				// Hiding a template, region, tile or drawing doesn't refresh sight, so follow the document itself
+				hooksManager.addHook(this.uuid, this.getSourceHook("update"), (doc, changed) => {
+					if (doc !== this.sourceDocument || !("hidden" in (changed ?? {}))) return;
+					refreshVisibility();
+				});
 			}
 
 			if (this.data.attachTo?.bindAlpha || this.data.attachTo?.bindElevation) {
@@ -2958,7 +3050,7 @@ export default class CanvasEffect extends PIXI.Container {
 
 		if (attachedToTarget) {
 			hooksManager.addHook(this.uuid, this.getTargetHook("delete"), (doc) => {
-				if (doc !== this.target) return;
+				if (doc !== this.targetDocument) return;
 				this._target = this._cachedTargetData.position;
 				const uuid = doc.uuid;
 				SequencerEffectManager.objectDeleted(uuid);
@@ -2967,7 +3059,7 @@ export default class CanvasEffect extends PIXI.Container {
 				SequencerEffectManager.objectDeleted(this.targetDocument.uuid);
 			}
 			hooksManager.addHook(this.uuid, this.getTargetHook("update"), (doc) => {
-				if (doc !== this.target) return;
+				if (doc !== this.targetDocument) return;
 				this.updateElevation();
 			});
 
@@ -3033,7 +3125,9 @@ export default class CanvasEffect extends PIXI.Container {
 	 * @private
 	 */
 	async _getDistanceScaling(distance, textureWidth) {
-		if (!this._distanceCache || this._distanceCache?.distance !== distance) {
+		// Keyed on the texture width too: a range variant swap keeps the distance but changes the width
+		if (!this._distanceCache || this._distanceCache?.distance !== distance
+			|| this._distanceCache?.textureWidth !== textureWidth) {
 			let scaleX = 1.0;
 			let scaleY = 1.0;
 
@@ -3053,6 +3147,7 @@ export default class CanvasEffect extends PIXI.Container {
 				scaleX,
 				scaleY,
 				distance,
+				textureWidth,
 			};
 		}
 
@@ -3068,6 +3163,11 @@ export default class CanvasEffect extends PIXI.Container {
 	async _applyDistanceScaling() {
 		const initialization = this._initialization;
 		const sprite = this.sprite;
+		// The ticker starts a new call every frame without awaiting the last one. A call that waited on a
+		// variant load must not apply its stale ray once newer calls have run.
+		const scalingCall = this._distanceScalingCall = (this._distanceScalingCall ?? 0) + 1;
+		const isStale = () => this._initialization !== initialization || this._ended || this.destroyed ||
+			this.sprite !== sprite || sprite.destroyed || this._distanceScalingCall !== scalingCall;
 		const ray = new foundry.canvas.geometry.Ray(this.sourcePosition, this.targetPosition);
 
 		this._rotateTowards(ray);
@@ -3076,13 +3176,11 @@ export default class CanvasEffect extends PIXI.Container {
 
 		this._updateCurrentFilePath(distance)
 		await sprite.activate(this._currentFilePath)
-		if (this._initialization !== initialization || this._ended || this.destroyed ||
-			this.sprite !== sprite || sprite.destroyed) return;
+		if (isStale()) return;
 		const texture = sprite.texture
 
 		let { scaleX, scaleY } = await this._getDistanceScaling(distance, texture.width);
-		if (this._initialization !== initialization || this._ended || this.destroyed ||
-			this.sprite !== sprite || sprite.destroyed) return;
+		if (isStale()) return;
 
 		if (this.data.attachTo?.active) {
 			const { x, y } = this.sourcePosition;
@@ -3216,6 +3314,26 @@ export default class CanvasEffect extends PIXI.Container {
 
 	async _transformStretchToAttachedSprite() {
 		try {
+			// Recomputing switches the sprite to the matching distance file and redoes the scaling, every frame.
+			// Skip while neither end has moved. Keep running while animations play on this effect, because
+			// recomputing overwrites the sprite scale they may animate (existing behaviour).
+			const source = this.sourcePosition;
+			const target = this.targetPosition;
+			const last = this._lastStretchState;
+			if (
+				last
+				&& last.initialization === this._initialization
+				&& last.sprite === this.sprite
+				&& last.sx === source?.x && last.sy === source?.y
+				&& last.tx === target?.x && last.ty === target?.y
+				&& !SequencerAnimationEngine.hasAnimations(this.id)
+			) return;
+			this._lastStretchState = {
+				initialization: this._initialization,
+				sprite: this.sprite,
+				sx: source?.x, sy: source?.y,
+				tx: target?.x, ty: target?.y,
+			};
 			await this._applyDistanceScaling();
 			this._setAnchors()
 		} catch (err) {

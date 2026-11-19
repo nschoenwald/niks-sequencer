@@ -2325,6 +2325,54 @@ export default class MotionSection extends Section {
 	 * Runs once per repetition, so each repetition re-snapshots its
 	 * direction.
 	 */
+	/**
+	 * Serializes the builder state so the section can be sent to other clients (`.play({ remote: true })`).
+	 * Tracks, noise and oscillate entries are plain data (they are stored in flags for persistent motions);
+	 * the target is sent as its uuid. Play-time resolution (snapshot directions, scaled strengths) happens
+	 * on each client in `preRun()` / `run()`.
+	 *
+	 * @returns {Promise<object>}
+	 * @private
+	 */
+	async _serialize() {
+		const data = await super._serialize();
+		const origin = this._originObject?.document ?? this._originObject;
+		return {
+			...data,
+			type: "motion",
+			sectionData: foundry.utils.deepClone({
+				origin: origin?.uuid ?? null,
+				persist: this._persist,
+				persistUntilUpdate: this._persistUntilUpdate,
+				zIndex: this._zIndex,
+				tracks: this._tracks,
+				noise: this._noise,
+				oscillate: this._oscillate,
+				name: this._name,
+				users: this._users ? [...this._users] : null,
+			}),
+		};
+	}
+
+	/**
+	 * @param {object} data
+	 * @returns {MotionSection}
+	 * @private
+	 */
+	_deserialize(data) {
+		const sectionData = data.sectionData;
+		this._originObject = sectionData.origin ? fromUuidSync(sectionData.origin) : null;
+		this._persist = sectionData.persist;
+		this._persistUntilUpdate = sectionData.persistUntilUpdate;
+		this._zIndex = sectionData.zIndex;
+		this._tracks = sectionData.tracks;
+		this._noise = sectionData.noise;
+		this._oscillate = sectionData.oscillate;
+		this._name = sectionData.name;
+		this._users = sectionData.users;
+		return super._deserialize(data);
+	}
+
 	async preRun() {
 		await this._waitForTokenMesh(this._originObject);
 

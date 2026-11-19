@@ -802,7 +802,10 @@ class AnimationSection extends Section {
 			resolved = true;
 			resolve();
 		};
-		this._animate(animData, safeResolve);
+		// Token documents are animated through document updates sent from timers (fades, moves, rotations), which add
+		// no attributes here. With nothing to animate, `_animate` would resolve on its first frame, so
+		// `.waitUntilFinished()` didn't wait for them; the timer below covers the section's full duration instead.
+		if (animData.attributes.length) this._animate(animData, safeResolve);
 		setTimeout(
 			safeResolve,
 			Math.max(0, overallDuration + this._currentWaitTime + animData.maxFPS)

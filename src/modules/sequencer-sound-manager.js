@@ -11,6 +11,12 @@ import flagManager from "../utils/flag-manager.js";
 import PasteManager from "./sequencer-paste-manager.js";
 
 
+/**
+ * Bumped when walls or regions change, so placed sounds rebuild their cached sound source (wall sweep).
+ */
+let soundGeometryEpoch = 0;
+const bumpSoundGeometryEpoch = () => { soundGeometryEpoch++; };
+
 const SOUND_STATES = {
 	STARTING: 0,
 	PLAYING: 1,
@@ -67,11 +73,61 @@ const placed_sound_mixin = (base_class) =>
 		}
 
 		async playSound() {
-			await this.sound.playAtPosition(this.position, this.data.locationOptions?.radius || 1, this.playData);
+			const playData = this.playData;
+			const played = await this.sound.playAtPosition(this.position, this.data.locationOptions?.radius || 1, playData);
+			if (!played) {
+				// Sound#playAtPosition doesn't start the sound when no listener can hear it yet. Start it muted
+				// instead, so it keeps its timing and ends normally; the update ticker raises the volume once
+				// a listener is in range. Without this, play() retried every 100ms until someone could hear it.
+				const baseEffect = playData.baseEffect;
+				const sfx = CONFIG.soundEffects;
+				if (baseEffect?.type in sfx && !this.sound.effects.some(e => e.type === baseEffect.type)) {
+					this.sound.effects.push(new sfx[baseEffect.type].effectClass(this.sound.context, baseEffect));
+				}
+				await this.sound.play({ loop: false, ...playData.playbackOptions, volume: 0 });
+			}
+			// Apply the volume right away: SoundsLayer#_configurePlayback sets it to 1 for a listener exactly
+			// at the source (always the case for alwaysForGMs), which ignored .volume() until the next tick.
+			this._updatePlayback();
 		}
 
 		update() {
 			if (this.state !== SOUND_STATES.PLAYING) return;
+			this._updatePlayback();
+		}
+
+		/**
+		 * The point sound source for this sound. Building one runs a wall sweep (`_createShapes`), so it is kept
+		 * and only re-initialized when its position, radius or settings change, and rebuilt when walls or
+		 * regions change (`soundGeometryEpoch`). Before, a new source was built for every sound every frame.
+		 *
+		 * @returns {{source: PointSoundSource, changed: boolean}}
+		 * @private
+		 */
+		_getSoundSource(init, sourceDataRef) {
+			const last = this._soundSourceKey;
+			const unchanged = this._soundSource && last
+				&& last.epoch === soundGeometryEpoch
+				&& last.x === init.x && last.y === init.y && last.elevation === init.elevation
+				&& last.radius === init.radius && last.walls === init.walls
+				&& last.sourceData === sourceDataRef;
+			if (unchanged) return { source: this._soundSource, changed: false };
+			// Rebuild on geometry changes: re-initializing with unchanged data wouldn't redo the wall sweep
+			if (!this._soundSource || last?.epoch !== soundGeometryEpoch) {
+				this._soundSource = new CONFIG.Canvas.soundSourceClass({ object: null });
+			}
+			this._soundSource.initialize(init);
+			this._soundSourceKey = {
+				epoch: soundGeometryEpoch,
+				x: init.x, y: init.y, elevation: init.elevation,
+				radius: init.radius, walls: init.walls,
+				sourceData: sourceDataRef,
+			};
+			return { source: this._soundSource, changed: true };
+		}
+
+		_updatePlayback() {
+			if (!this.sound?.gain) return;
 
 			let volume = this.data.volume ?? 0.8;
 
@@ -91,93 +147,114 @@ const placed_sound_mixin = (base_class) =>
 			sourceData ??= (this._emptySourceData ??= {});
 			const resolvedSourceData = this._resolveLevelForSourceData(sourceData, sourcePosition);
 
-			const source = new CONFIG.Canvas.soundSourceClass({ object: null });
-			source.initialize({
+			const { source, changed } = this._getSoundSource({
 				x: sourcePosition.x,
 				y: sourcePosition.y,
 				elevation: sourcePosition.elevation ?? 0,
 				radius: canvas.dimensions.distancePixels * radius,
 				walls,
 				...resolvedSourceData
-			});
+			}, resolvedSourceData);
 
-			const config = { sound: this.sound, source, listener: undefined, volume: 0, walls, muffled: false, pan: 0 };
-
-			// Configure playback volume using the closest listener position
 			const listeners = (gmAlways && game.user.isGM) ? [sourcePosition] : canvas.sounds.getListenerPositions();
-			for (const l of listeners) {
-				const v = volume * source.getVolumeMultiplier(l, { easing });
-				Object.assign(config, { listener: l, volume: v });
-				let ray = new foundry.canvas.geometry.Ray(l, sourcePosition)
-				if(this.data.panSound?.active && ray.distance > 0) {
-					const normalized_x = ray.dx / ray.distance; // -1..1
 
-					const panned_value = soundlib.ease_pan_value(normalized_x, 1.6);
-					let pan_ease_factor = 1.0;
+			// Volume, muffling and pan only depend on the source and the listeners. Skip the listener loop and
+			// the wall / surface collision test in _configurePlayback while neither has changed.
+			let listenerKey = `${canvas.level?.id ?? ""}`;
+			for (const l of listeners) listenerKey += `|${l.x},${l.y},${l.elevation}`;
+			let playback = this._playbackState;
+			const recompute = changed || !playback || playback.listenerKey !== listenerKey;
 
-					if(this.data.panSound?.innerEaseDistance > 0) {
-						const inner_ease_distance = this.data.panSound?.innerEaseDistance || 0;
-						const outer_ease_distance = (
-							this.data.panSound?.outerEaseDistance || Math.min(inner_ease_distance * 2, this.data.locationOptions?.radius ?? 1)
-						);
-						const inner_ease_distance_pixels = (inner_ease_distance / canvas.grid.distance) * canvas.grid.size;
-						const outer_ease_distance_pixels = (outer_ease_distance / canvas.grid.distance) * canvas.grid.size;
-						pan_ease_factor = soundlib.calculate_pan_factor(ray.distance, inner_ease_distance_pixels, outer_ease_distance_pixels);
+			if (recompute) {
+				const config = { sound: this.sound, source, listener: undefined, volume: 0, walls, muffled: false, pan: 0 };
+
+				// Configure playback volume using the closest listener position
+				for (const l of listeners) {
+					const v = volume * source.getVolumeMultiplier(l, { easing });
+					// Keep the loudest listener, like Sound#playAtPosition. Before, the last listener always won,
+					// so a player with several tokens only heard the sound near the last one.
+					if (v <= config.volume) continue;
+					Object.assign(config, { listener: l, volume: v, pan: 0 });
+					let ray = new foundry.canvas.geometry.Ray(l, sourcePosition)
+					if(this.data.panSound?.active && ray.distance > 0) {
+						const normalized_x = ray.dx / ray.distance; // -1..1
+
+						const panned_value = soundlib.ease_pan_value(normalized_x, 1.6);
+						let pan_ease_factor = 1.0;
+
+						if(this.data.panSound?.innerEaseDistance > 0) {
+							const inner_ease_distance = this.data.panSound?.innerEaseDistance || 0;
+							const outer_ease_distance = (
+								this.data.panSound?.outerEaseDistance || Math.min(inner_ease_distance * 2, this.data.locationOptions?.radius ?? 1)
+							);
+							const inner_ease_distance_pixels = (inner_ease_distance / canvas.grid.distance) * canvas.grid.size;
+							const outer_ease_distance_pixels = (outer_ease_distance / canvas.grid.distance) * canvas.grid.size;
+							pan_ease_factor = soundlib.calculate_pan_factor(ray.distance, inner_ease_distance_pixels, outer_ease_distance_pixels);
+						}
+
+						// Within the ease distance => closer to 0, beyond it => full pan
+						config.pan = panned_value * pan_ease_factor;
 					}
-
-					// Within the ease distance => closer to 0, beyond it => full pan
-					config.pan = panned_value * pan_ease_factor;
 				}
-			}
 
-			canvas.sounds._configurePlayback(config);
+				const listenerVolume = config.volume;
+				canvas.sounds._configurePlayback(config);
+				// _configurePlayback sets the volume to 1 when the listener is exactly at the source, which drops
+				// .volume() (always the case for alwaysForGMs). The multiplier is 1 there, so use the computed value.
+				if (config.listener && config.volume === 1) config.volume = Math.min(listenerVolume, 1);
 
-			let applyEffect = false;
-			let hasMuffledEffect = this.sound.effects.findIndex(e => e.type === muffledEffect.type);
+				let applyEffect = false;
+				let hasMuffledEffect = this.sound.effects.findIndex(e => e.type === muffledEffect.type);
 
-			if (hasMuffledEffect > -1 && !config.muffled) {
-				this.sound.effects[hasMuffledEffect].disconnect();
-				this.sound.effects.splice(hasMuffledEffect, 1);
-				applyEffect = true;
-			} else if (hasMuffledEffect === -1 && config.muffled) {
-				const sfx = CONFIG.soundEffects;
-				let effect;
-				if (config.muffled && (muffledEffect?.type in sfx)) {
-					const muffledCfg = sfx[muffledEffect.type];
-					effect = new muffledCfg.effectClass(this.sound.context, muffledEffect);
-					this.sound.effects.push(effect);
-				}
-				applyEffect = true;
-			}
-
-			let hasPanner = this.sound.effects.findIndex(e => e.type === "panner");
-			if(this.data.panSound) {
-				this.panner ||= this.sound.context.createStereoPanner();
-				this.panner.type = "panner"
-				if (hasPanner === -1) {
-					this.sound.effects.push(this.panner);
+				if (hasMuffledEffect > -1 && !config.muffled) {
+					this.sound.effects[hasMuffledEffect].disconnect();
+					this.sound.effects.splice(hasMuffledEffect, 1);
+					applyEffect = true;
+				} else if (hasMuffledEffect === -1 && config.muffled) {
+					const sfx = CONFIG.soundEffects;
+					let effect;
+					if (config.muffled && (muffledEffect?.type in sfx)) {
+						const muffledCfg = sfx[muffledEffect.type];
+						effect = new muffledCfg.effectClass(this.sound.context, muffledEffect);
+						this.sound.effects.push(effect);
+					}
 					applyEffect = true;
 				}
-			}
 
-			if(applyEffect) {
-				this.sound.applyEffects(this.sound.effects);
-			}
+				let hasPanner = this.sound.effects.findIndex(e => e.type === "panner");
+				if(this.data.panSound) {
+					this.panner ||= this.sound.context.createStereoPanner();
+					this.panner.type = "panner"
+					if (hasPanner === -1) {
+						this.sound.effects.push(this.panner);
+						applyEffect = true;
+					}
+				}
 
-			if (this.data.attachTo?.active) {
-				if (this.sourceDocument.hidden) {
-					config.volume = 0;
+				if(applyEffect) {
+					this.sound.applyEffects(this.sound.effects);
+				}
+
+				const panChanged = !playback || playback.pan !== config.pan;
+				playback = this._playbackState = { listenerKey, volume: config.volume, pan: config.pan };
+
+				if(this.data.panSound && panChanged) {
+					const t = this.sound.context.currentTime;
+					this.panner.pan.cancelScheduledValues(t);
+					this.panner.pan.setValueAtTime(this.panner.pan.value, t);
+					this.panner.pan.linearRampToValueAtTime(config.pan, t + 0.03);
 				}
 			}
 
-			this.sound.volume = config.volume * this.sound.volume_multiplier;
-
-			if(this.data.panSound) {
-				const t = this.sound.context.currentTime;
-				this.panner.pan.cancelScheduledValues(t);
-				this.panner.pan.setValueAtTime(this.panner.pan.value, t);
-				this.panner.pan.linearRampToValueAtTime(config.pan, t + 0.03);
+			let finalVolume = playback.volume;
+			if (this.data.attachTo?.active) {
+				if (this.sourceDocument.hidden) {
+					finalVolume = 0;
+				}
 			}
+
+			// Applied every frame: fades animate volume_multiplier
+			this.sound.volume = finalVolume * this.sound.volume_multiplier;
 		}
 
 		get playData() {
@@ -500,7 +577,7 @@ class SequencerSound {
 			if (!this.isSourceDestroyed) {
 				let position = canvaslib.get_object_position(this.source, { ignoreMotion: this.data.ignoreSourceMotion });
 				let offset = canvaslib.getOffsetFromData(this.data, { type: "source", twister: this.twister });
-				let elevation = this.data.attachTo.bindElevation ? (position.elevation ?? 0) : 0;
+				let elevation = this.data.attachTo.bindElevation ? this._getSourceElevation(position.elevation) : 0;
 				this._sourcePosition = {
 					x: position.x - offset.x,
 					y: position.y - offset.y,
@@ -510,11 +587,31 @@ class SequencerSound {
 		} else if (!this._sourcePosition) {
 			const fromData = this.data.source ? canvaslib.getPositionFromData(this.data, "source", this.twister) : false;
 			if (fromData) {
-				fromData.elevation = this._applyElevationOverride(fromData.elevation ?? 0);
+				fromData.elevation = this._applyElevationOverride(this._getSourceElevation(fromData.elevation));
 			}
 			this._sourcePosition = fromData;
 		}
 		return this._sourcePosition;
+	}
+
+	/**
+	 * The elevation a sound placed on its source is heard from.
+	 * - Unbounded Regions have an elevation of -Infinity in V14, which made the sound inaudible: use 0.
+	 * - V14 listens from a token's movement origin, half its depth above its elevation. A sound at the
+	 *   token's elevation was too far below it for the default radius of 1, so it never played.
+	 *
+	 * @param {number|undefined} elevation
+	 * @returns {number}
+	 * @private
+	 */
+	_getSourceElevation(elevation) {
+		if (!Number.isFinite(elevation)) return 0;
+		const doc = this.sourceDocument;
+		if (doc instanceof foundry.documents.TokenDocument && typeof doc.getListenerPosition === "function") {
+			const listenerElevation = doc.getListenerPosition().elevation;
+			if (Number.isFinite(listenerElevation)) return elevation + (listenerElevation - doc.elevation);
+		}
+		return elevation;
 	}
 
 	_applyElevationOverride(baseElevation) {
@@ -956,6 +1053,9 @@ export default class SequencerSoundManager {
 		Hooks.on("createTile", this._documentCreated.bind(this));
 		Hooks.on("createMeasuredTemplate", this._documentCreated.bind(this));
 		Hooks.on("createRegion", this._documentCreated.bind(this));
+		for (const hook of ["canvasReady", "createWall", "updateWall", "deleteWall", "createRegion", "updateRegion", "deleteRegion"]) {
+			Hooks.on(hook, bumpSoundGeometryEpoch);
+		}
 	}
 
 	static _patchSoundDataForDocument(inDocumentUuid, sounds) {
@@ -1030,7 +1130,8 @@ export default class SequencerSoundManager {
 					})
 				}
 			} else if (doc) {
-				if (doc.parent?.id === canvas.scene.id) {
+				// Persists placed on a scene location are stored under the scene's own UUID
+				if (doc === canvas.scene || doc.parent?.id === canvas.scene.id) {
 					docSoundsMap[uuid] = sounds;
 				}
 			} else {

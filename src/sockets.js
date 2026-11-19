@@ -8,6 +8,31 @@ import SequencerPreloader from './modules/sequencer-preloader.js'
 import SequencerMotionManager from "./modules/sequencer-motion-manager.js";
 
 
+/**
+ * Pending document updates per UUID. Animation sections send fades, moves and rotations of a token as separate
+ * updates from timers that aren't awaited; run in parallel, each one is diffed against the document's state before
+ * the previous one was applied, and Foundry drops a later update that looks unchanged (e.g. a fade-in to alpha 1
+ * sent while the fade-out to 0 is still in flight). Running them one after another per document keeps the order.
+ * @type {Map<string, Promise>}
+ */
+const documentUpdateQueues = new Map();
+
+/**
+ * Run `fn` after the previous queued update of the same document has finished.
+ * @param {string} uuid
+ * @param {() => Promise} fn
+ * @returns {Promise}
+ */
+function queueDocumentUpdate(uuid, fn) {
+	const previous = documentUpdateQueues.get(uuid) ?? Promise.resolve();
+	const next = previous.catch(() => {}).then(fn);
+	documentUpdateQueues.set(uuid, next);
+	next.catch(() => {}).finally(() => {
+		if (documentUpdateQueues.get(uuid) === next) documentUpdateQueues.delete(uuid);
+	});
+	return next;
+}
+
 const RECIPIENT_TYPES = {
 	GM: 0,
 	SUPERUSER: 1,
@@ -72,13 +97,15 @@ const SOCKET_CALLBACKS = {
 	[SOCKET_HANDLERS.PONG]: (data) => {
 		return SequencerPreloader.handlePong(...data.payload)
 	},
-	[SOCKET_HANDLERS.UPDATE_DOCUMENT]: async (data) => {
+	[SOCKET_HANDLERS.UPDATE_DOCUMENT]: (data) => {
 		let [documentUuid, updates, animate] = data.payload;
-		const document = await fromUuid(documentUuid);
-		if(!document) {
-			return;
-		}
-		return document.update(updates, animate);
+		return queueDocumentUpdate(documentUuid, async () => {
+			const document = await fromUuid(documentUuid);
+			if(!document) {
+				return;
+			}
+			return document.update(updates, animate);
+		});
 	},
 	[SOCKET_HANDLERS.ADD_FLAGS]: (data) => {
 		return FlagManager._addFlags(...data.payload)

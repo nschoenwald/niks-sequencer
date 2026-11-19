@@ -1,8 +1,8 @@
 {
   "id": "sequencer",
-  "title": "Sequencer",
-  "description": "This module allows you to play effects on the canvas, and create complex sequences of actions",
-  "version": "10.0.0",
+  "title": "Nik's Sequencer",
+  "description": "A maintained fork of Sequencer by Fantasy Computerworks, with bug fixes and performance improvements. Keeps the module id \"sequencer\", so modules that depend on Sequencer keep working. Play effects on the canvas and create complex sequences of actions.",
+  "version": "4.3.0.n5",
   "library": "false",
   "compatibility": {
     "minimum": "13",
@@ -14,10 +14,18 @@
       "name": "Wasp",
       "discord": "Wasp#2005",
       "website": "http://fantasycomputer.works/"
+    },
+    {
+      "name": "Nik",
+      "url": "https://github.com/nschoenwald"
     }
   ],
-  "esmodules": ["dist/sequencer.js"],
-  "styles": ["dist/sequencer.css"],
+  "esmodules": [
+    "dist/sequencer.js"
+  ],
+  "styles": [
+    "dist/sequencer.css"
+  ],
   "flags": {
     "css": {
       "shorthand": "sequencer"
@@ -70,9 +78,10 @@
     }
   ],
   "socket": true,
-  "url": "https://github.com/fantasycalendar/FoundryVTT-Sequencer",
-  "manifest": "https://github.com/fantasycalendar/FoundryVTT-Sequencer/releases/latest/download/module.json",
-  "download": "https://github.com/fantasycalendar/FoundryVTT-Sequencer/releases/latest/download/module.zip",
-  "readme": "https://github.com/fantasycalendar/FoundryVTT-Sequencer/blob/master/README.md",
-  "bugs": "https://github.com/fantasycalendar/FoundryVTT-Sequencer/issues"
+  "url": "https://github.com/nschoenwald/niks-sequencer",
+  "manifest": "https://github.com/nschoenwald/niks-sequencer/releases/latest/download/module.json",
+  "download": "https://github.com/nschoenwald/niks-sequencer/releases/latest/download/module.zip",
+  "readme": "https://github.com/nschoenwald/niks-sequencer/blob/master/README.md",
+  "bugs": "https://github.com/nschoenwald/niks-sequencer/issues",
+  "changelog": "https://github.com/nschoenwald/niks-sequencer/blob/master/CHANGELOG.md"
 }

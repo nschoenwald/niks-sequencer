@@ -1,5 +1,6 @@
 import CONSTANTS from "./constants.js";
 import { debug, user_can_do } from "./lib/lib.js";
+import RenderOptimizations from "./lib/render-optimizations.js";
 import { DatabaseViewerApp } from "./formapplications/database/database-viewer-app.js";
 import { EffectsUIApp } from "./formapplications/effects-ui/effects-ui-app.js";
 
@@ -33,6 +34,17 @@ export function registerSettings() {
     requiresReload: true,
     type: Boolean,
   });
+
+  game.settings.register(CONSTANTS.MODULE_NAME, "enable-render-optimizations", {
+    name: "SEQUENCER.Setting.EnableRenderOptimizations.Title",
+    hint: "SEQUENCER.Setting.EnableRenderOptimizations.Label",
+    scope: "client",
+    config: true,
+    default: true,
+    type: Boolean,
+    onChange: (value) => RenderOptimizations.set(value),
+  });
+  RenderOptimizations.set(game.settings.get(CONSTANTS.MODULE_NAME, "enable-render-optimizations"));
 
   game.settings.register(CONSTANTS.MODULE_NAME, "debug", {
     name: "SEQUENCER.Setting.Debug.Title",

@@ -76,17 +76,22 @@ async function decodeWebm(buffer, minimumScale, id) {
 		const metadata = videoTrack.getMetadata();
 		const codec = videoTrack.getCodec();
 		let frames, alphaFrames;
-		try {
-			[frames, alphaFrames] = await Promise.all([
-				decodeWebmFrames({ metadata, codec, frameData: videoTrack.frames }),
-				decodeWebmFrames({ metadata, codec, frameData: videoTrack.framesAlpha }),
-			]);
-		} catch (error) {
-			if (error instanceof Error) {
-				return errorResponse(error.message);
+		const results = await Promise.allSettled([
+			decodeWebmFrames({ metadata, codec, frameData: videoTrack.frames }),
+			decodeWebmFrames({ metadata, codec, frameData: videoTrack.framesAlpha }),
+		]);
+		const failed = results.find((r) => r.status === "rejected");
+		if (failed) {
+			// Release the frames of the track that did decode
+			for (const r of results) {
+				if (r.status === "fulfilled") for (const frame of r.value) frame.close();
+			}
+			if (failed.reason instanceof Error) {
+				return errorResponse(failed.reason.message);
 			}
 			return errorResponse("Error decoding video");
 		}
+		[frames, alphaFrames] = results.map((r) => r.value);
 		if (frames.length !== alphaFrames.length && videoTrack.framesAlpha.length !== 0) {
 			return errorResponse("alpha frame count mismatch");
 		}

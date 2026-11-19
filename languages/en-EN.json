@@ -150,6 +150,10 @@
         "Title": "Enable Above UI Screenspace Layer",
         "Label": "This enables the layer for playing effects above all UI elements in Foundry - some users have reported this layer causes a significant performance hit, so disable this if so."
       },
+      "EnableRenderOptimizations": {
+        "Title": "Enable Rendering Optimizations",
+        "Label": "Reuses mask textures that haven't changed, skips filters and masks of effects outside the screen, and stops updating video frames of effects you can't see. Turn this off if masked or filtered effects look wrong."
+      },
       "Debug": {
         "Title": "Enable debugging",
         "Label": "This will make the sequencer log into the console what it is doing"

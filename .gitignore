@@ -9,3 +9,6 @@ style.css
 /dist
 /tools
 *.typescript-build
+CHANGELOG_internal.md
+CLAUDE.md
+lang-unreviewed/

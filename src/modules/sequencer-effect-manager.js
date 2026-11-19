@@ -499,7 +499,8 @@ export default class SequencerEffectManager {
 					})
 				}
 			} else if (doc) {
-				if (doc.parent?.id === canvas.scene.id) {
+				// Persists placed on a scene location are stored under the scene's own UUID
+				if (doc === canvas.scene || doc.parent?.id === canvas.scene.id) {
 					docEffectsMap[uuid] = effects;
 				}
 			} else {

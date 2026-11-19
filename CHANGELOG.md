@@ -1,5 +1,40 @@
 ## Changelog
 
+# Version 4.3.0.n5
+- *Fork* - Released as **Nik's Sequencer**, a maintained fork of Sequencer. It keeps the module id `sequencer`, so modules that need Sequencer keep working. Install it with the manifest link in the README
+- *Sounds* - Sounds placed on the canvas are much cheaper while they play. Their wall check is only redone when the sound, a listener, a wall or a region changes, instead of every frame
+- *Effects* - Effects stretched to an attached target (`.stretchTo()` with `attachTo: true`, for example beam animations) no longer recalculate their length every frame while neither end moves
+
+# Version 4.3.0.n4
+- *Effects* - Fixed persistent effects placed on a scene location (not on a token or other object) not coming back after a reload or scene change
+- *Effects* - Fixed effects attached to a template or region with `bindVisibility` not hiding when the template or region is hidden
+- *Sounds* - Fixed persistent sounds placed on a scene location not coming back after a reload or scene change
+- *Sounds* - Fixed sounds played `.atLocation()` a token not being heard on Foundry V14 unless `.alwaysForGMs()` was used for GMs
+- *Sounds* - Fixed sounds played `.atLocation()` a region staying silent on Foundry V14
+- *Sounds* - Fixed `.volume()` being ignored by GMs for sounds played `.atLocation()` with `.alwaysForGMs()`
+- *Sounds* - Fixed located sounds that nobody could hear when they started staying in the Sequencer Manager forever. They now play silently, become audible when a listener comes in range and end on time
+- *Sounds* - Fixed players with several tokens only hearing located sounds near one of them
+- *Crosshairs* - Fixed `.crosshair().persist()` sending later sections that use the crosshair's name to the top-left corner of the scene on Foundry V14
+- *Motion* - `.motion()` sections can now be played with `.play({ remote: true })`
+- *Sequencer* - Fixed `.delay()` being ignored on sections of sequences played with `.play({ remote: true })`
+- *Spritesheets* - Fixed persistent effects using VP9 videos (for example some Eskie or BLFX files) never switching to their optimized version in Chrome, and the conversion hanging
+
+# Version 4.3.0.n3
+- *Animations* - Fixed `.waitUntilFinished()` not waiting for `.fadeIn()`, `.fadeOut()`, `.rotateIn()`, `.rotateOut()`, `.moveTowards()` and `.rotateTowards()` on tokens. The next section started one frame later instead
+- *Animations* - Fixed token updates from animation sections getting lost when several were sent close together. For example a token faded out and back in around a `.teleportTo()` could stay invisible, because the fade-in arrived before the fade-out had been applied and Foundry saw no change
+
+# Version 4.3.0.n2
+- *Effects* - Masked effects (for example spell animations clipped to a template, region or drawing) no longer redraw their mask every frame when nothing about it has changed
+- *Effects* - Effects with filters or masks are no longer rendered at all while they are completely off-screen
+- *Effects* - Video effects that are off-screen or hidden no longer send new video frames to the graphics card. The video keeps playing, so timing and loops aren't affected
+- *Effects* - Fixed persistent video effects sometimes leaking video memory when they switched to their optimized version
+- *Effects* - Effects shown faded to the GM because they only play for other players no longer cost an extra rendering pass
+- *Settings* - Added **Enable Rendering Optimizations** (on by default, per client) to turn the above off if masked or filtered effects look wrong
+
+# Version 4.3.0.n1
+- *Effects* - Fixed `.stretchTo()` effects attached to a target not ending when the target is deleted, and not following the target's elevation changes
+- *Effects* - Fixed `.stretchTo()` effects attached to a moving source or target briefly snapping to an old length, or keeping the wrong length, after switching to another distance variant of a range file
+
 # Version 4.3.0
 - *Sequencer* - Fixed finished sequences never being cleared out when the Sequencer Manager was never opened
 - *Effects* - Effects placed on or aimed at a placeable (`.atLocation()`, `.attachTo()`, `.stretchTo()`, `.rotateTowards()`) now follow its visible position when it is moving via a `.motion()`. Pass `ignoreMotion: true` to use the document position instead, for example to keep a shadow on the ground beneath a flying token
@@ -36,6 +71,7 @@
 - *Effects* - Fixed position calculation on effects and sounds with tiles on v14 (thank you aljames-arctic on github!)
 - *Effects* - Fixed custom PF2e template shapes not working with `.scaleToObject()` (thank you MrVauxs on github!)
 - *Effects* - Fixed `.loopOptions()` with `loops` set not limiting the number of loops when combined with a `.duration()` longer than the effect file's own duration
+- *Effects* - Fixed canvas blackout crash when a Token or Tile used as an effect mask is deleted from the scene
 
 # Version 4.2.2
 - *Effects* - Fixed `.copySprite()` not copying the sprites of tokens with scale on them

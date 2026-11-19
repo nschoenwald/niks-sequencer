@@ -1,0 +1,52 @@
+name: Release Module
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Extract Tag Version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Set version and URLs in module.json
+        run: |
+          jq \
+            --arg version "${{ steps.get_version.outputs.VERSION }}" \
+            --arg manifest "https://github.com/${{ github.repository }}/releases/latest/download/module.json" \
+            --arg download "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/module.zip" \
+            '.version=$version | .manifest=$manifest | .download=$download' \
+            module.json > tmp.json && mv tmp.json module.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create Module Archive
+        run: zip -r module.zip module.json LICENSE README.md CHANGELOG.md dist/ samples/ languages/ images/sequencer.png typings/
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            module.zip
+            module.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

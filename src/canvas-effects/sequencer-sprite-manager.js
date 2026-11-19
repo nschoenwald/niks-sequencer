@@ -291,6 +291,13 @@ export class SequencerSpriteManager extends PIXI.Container {
 	/** @type {PIXI.Text | null} */
 	#textSprite;
 
+	/**
+	 * Whether the active video asset should upload new frames to the GPU.
+	 * Turned off by the effect while it is hidden or off-screen.
+	 * @type {boolean}
+	 */
+	#videoUploadsEnabled = true;
+
 	/** @type {{width: number, height: number, scaleX: number, scaleY: number}} */
 	#defaultScaling = {
 		width: 0,
@@ -355,6 +362,38 @@ export class SequencerSpriteManager extends PIXI.Container {
 		};
 	}
 
+	/** @returns {boolean} true if the active asset is a plain video (not a compiled spritesheet) */
+	get hasVideoAsset() {
+		return this.activeAsset instanceof VideoAsset;
+	}
+
+	/**
+	 * Turns GPU uploads of new video frames for the active video asset on or off.
+	 * The video keeps playing either way, so duration, loops and sync stay intact.
+	 * @param {boolean} enabled
+	 */
+	setVideoUploadsEnabled(enabled) {
+		enabled = !!enabled;
+		if (this.#videoUploadsEnabled === enabled) return;
+		this.#videoUploadsEnabled = enabled;
+		this.#applyVideoUploadState(this.activeAsset);
+	}
+
+	/**
+	 * @param {VideoAsset | VideoSpritesheetAsset | TextureAsset | FlipbookAsset | undefined | null} asset
+	 */
+	#applyVideoUploadState(asset) {
+		if (!(asset instanceof VideoAsset)) return;
+		const baseTexture = asset.texture?.baseTexture;
+		const resource = baseTexture?.resource;
+		if (!resource || resource.destroyed || !("autoUpdate" in resource)) return;
+		const enabled = this.#videoUploadsEnabled;
+		if (resource.autoUpdate === enabled) return;
+		resource.autoUpdate = enabled;
+		// Upload the current frame right away so the effect doesn't show a stale frame when it comes back into view
+		if (enabled && !baseTexture.destroyed) baseTexture.update();
+	}
+
 	updateVideoTextures() {
 		// CHECKME lets see if this works without update texture.
 		this.#managedSprite?.texture?.update();
@@ -394,14 +433,23 @@ export class SequencerSpriteManager extends PIXI.Container {
 				if (!spritesheet) {
 					return;
 				}
-				const previousAsset = this.activeAsset;
-				const asset = new VideoSpritesheetAsset({ filepath: filePath, spritesheet });
-				this.#relatedAssets.set(filePath, asset);
-				if (this.destroyed || this.#activeAssetPath !== filePath) {
+				// The effect may have been destroyed while the spritesheet was compiling.
+				// Don't register a spritesheet reference that nothing would release.
+				if (this.destroyed) {
 					return;
 				}
-				this.#activateAsset(asset);
-				previousAsset?.destroy();
+				// The asset this spritesheet replaces (usually the VideoAsset for the same file).
+				// It used to be dropped from #relatedAssets without being destroyed when another
+				// file was active by now, leaking its video element, blob URL and GPU texture.
+				const replacedAsset = this.#relatedAssets.get(filePath);
+				const asset = new VideoSpritesheetAsset({ filepath: filePath, spritesheet });
+				this.#relatedAssets.set(filePath, asset);
+				if (this.#activeAssetPath === filePath) {
+					this.#activateAsset(asset);
+				}
+				if (replacedAsset && replacedAsset !== asset) {
+					replacedAsset.destroy();
+				}
 			});
 		}
 	}
@@ -691,6 +739,11 @@ export class SequencerSpriteManager extends PIXI.Container {
 		}
 		this.#managedSprite = view;
 		this.addChildAt(view, 0);
+
+		// A previously inactive video asset may still have uploads turned off
+		if (nextAsset instanceof VideoAsset) {
+			this.#applyVideoUploadState(nextAsset);
+		}
 
 		return true;
 	}

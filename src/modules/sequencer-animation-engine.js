@@ -68,6 +68,16 @@ const SequencerAnimationEngine = {
 		});
 	},
 
+	/**
+	 * Whether any unfinished animation was added for the given origin (an effect id, for example)
+	 *
+	 * @param {string} origin
+	 * @returns {boolean}
+	 */
+	hasAnimations(origin) {
+		return this._animations.some((animation) => animation.origin === origin && !animation.complete);
+	},
+
 	endAnimations(target) {
 		this._animations = this._animations.filter(
 			(animation) => animation.origin !== target

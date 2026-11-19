@@ -415,7 +415,9 @@ export default class CrosshairSection extends Section {
 				const [template] = await canvas.scene.createEmbeddedDocuments("MeasuredTemplate", [
 					reticle.toObject()
 				]);
-				this.sequence.crosshairs[this._name] = template;
+				// V14 stores templates as Regions; the MeasuredTemplateDocument returned by the compatibility shim
+				// is detached and its UUID doesn't resolve, which sent later sections to 0,0. Use the Region.
+				this.sequence.crosshairs[this._name] = (CONSTANTS.IS_V14 && canvas.scene.regions.get(template?.id)) || template;
 			}
 
 			if (this._name) {

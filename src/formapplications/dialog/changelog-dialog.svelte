@@ -1,9 +1,9 @@
 <script>
 	import { marked } from "marked";
-	import changelogText from "../../../changelog.md?raw";
+	import changelogText from "../../../CHANGELOG.md?raw";
 
 	const GITHUB_CHANGELOG_URL =
-		"https://github.com/fantasycalendar/FoundryVTT-Sequencer/blob/master/changelog.md";
+		"https://github.com/nschoenwald/niks-sequencer/blob/master/CHANGELOG.md";
 	const PATREON_URL = "https://patreon.com/cw/fantasycomputerworks";
 
 	function parseChangelog(raw) {

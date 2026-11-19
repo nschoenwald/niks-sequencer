@@ -33,6 +33,9 @@ const flagManager = {
 				element.remove();
 			}
 		});
+		for (const hook of ["createJournalEntry", "updateJournalEntry", "deleteJournalEntry"]) {
+			Hooks.on(hook, () => this._clearDatabaseCache());
+		}
 		Hooks.on("preDeleteJournalEntry", (doc) => {
 			let database = this.database;
 			if(!database) return;
@@ -40,11 +43,25 @@ const flagManager = {
 		})
 	},
 
+	/**
+	 * Parsed database flags per flag key. Rebuilding them walks every stored effect, sound and motion, and it
+	 * happened on every read (getEffectFlags on each created token, three full rebuilds per updateFlags).
+	 * Cleared whenever a journal entry changes; the returned arrays are shared, so callers must not mutate them
+	 * (they copy or deep-clone them today).
+	 */
+	_databaseCache: new Map(),
+
+	_clearDatabaseCache() {
+		this._databaseCache.clear();
+	},
+
 	_getDatabaseData(flag) {
 		let database = this.database;
 		if(!database){
 			return {};
 		}
+		const cached = this._databaseCache.get(flag);
+		if (cached && cached.database === database) return cached.data;
 		let flagData = {};
 		let flags = foundry.utils.getProperty(database, flag) ?? {};
 		for (let [uuid, data] of Object.entries(flags)) {
@@ -52,14 +69,19 @@ const flagManager = {
 			flagData[newUuid] ??= []
 			flagData[newUuid] = flagData[newUuid].concat(data);
 		}
+		this._databaseCache.set(flag, { database, data: flagData });
 		return flagData;
 	},
 
+	/**
+	 * Only the requested kind is parsed (callers usually read one of the three)
+	 */
 	getDatabaseFlags() {
+		const manager = this;
 		return {
-			effects: this._getDatabaseData(CONSTANTS.EFFECTS_FLAG),
-			motions: this._getDatabaseData(CONSTANTS.MOTIONS_FLAG),
-			sounds: this._getDatabaseData(CONSTANTS.SOUNDS_FLAG)
+			get effects() { return manager._getDatabaseData(CONSTANTS.EFFECTS_FLAG); },
+			get motions() { return manager._getDatabaseData(CONSTANTS.MOTIONS_FLAG); },
+			get sounds() { return manager._getDatabaseData(CONSTANTS.SOUNDS_FLAG); },
 		};
 	},
 

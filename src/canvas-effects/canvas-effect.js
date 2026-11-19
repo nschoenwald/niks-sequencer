@@ -16,10 +16,25 @@ import { is_real_number } from "../lib/lib.js";
 import RenderOptimizations from "../lib/render-optimizations.js";
 
 const hooksManager = {
+	/** @type {Map<string, {global: Map<string, Function[]>, byDoc: Map<string, Map<string, Function[]>>}>} */
 	_byHook: new Map(),
 	_hooksRegistered: new Set(),
+	/** Which (hook, document) pairs each effect registered, so removeHooks doesn't scan every document */
+	_effectDocs: new Map(),
 
-	addHook(effectUuid, hookName, callable, { effect = null, callNow = false } = {}) {
+	/**
+	 * @param {string} effectUuid
+	 * @param {string} hookName
+	 * @param {Function} callable
+	 * @param {object} [options]
+	 * @param {CanvasEffect} [options.effect]
+	 * @param {boolean} [options.callNow]
+	 * @param {string} [options.documentUuid]  Only call this for hook calls whose first argument is this document
+	 *                                          (or a placeable of it). Document hooks fire for every document of
+	 *                                          a type (refreshToken every frame while tokens move), and every
+	 *                                          effect's callbacks used to run and compare the document themselves.
+	 */
+	addHook(effectUuid, hookName, callable, { effect = null, callNow = false, documentUuid = null } = {}) {
 		if (!this._hooksRegistered.has(hookName)) {
 			lib.debug("registering hook for: " + hookName);
 			this._hooksRegistered.add(hookName);
@@ -30,13 +45,27 @@ const hooksManager = {
 
 		let perHook = this._byHook.get(hookName);
 		if (!perHook) {
-			perHook = new Map();
+			perHook = { global: new Map(), byDoc: new Map() };
 			this._byHook.set(hookName, perHook);
 		}
-		let callbacks = perHook.get(effectUuid);
+		let byEffect = perHook.global;
+		if (documentUuid) {
+			byEffect = perHook.byDoc.get(documentUuid);
+			if (!byEffect) {
+				byEffect = new Map();
+				perHook.byDoc.set(documentUuid, byEffect);
+			}
+			let docs = this._effectDocs.get(effectUuid);
+			if (!docs) {
+				docs = [];
+				this._effectDocs.set(effectUuid, docs);
+			}
+			docs.push([hookName, documentUuid]);
+		}
+		let callbacks = byEffect.get(effectUuid);
 		if (!callbacks) {
 			callbacks = [];
-			perHook.set(effectUuid, callbacks);
+			byEffect.set(effectUuid, callbacks);
 		}
 		callbacks.push(callable);
 
@@ -49,7 +78,17 @@ const hooksManager = {
 	_hookCalled(hookName, ...args) {
 		const perHook = this._byHook.get(hookName);
 		if (!perHook) return;
-		for (const callbacks of perHook.values()) {
+		this._callAll(hookName, perHook.global, args);
+		if (perHook.byDoc.size) {
+			const first = args[0];
+			const documentUuid = first?.document?.uuid ?? first?.uuid;
+			const byEffect = documentUuid && perHook.byDoc.get(documentUuid);
+			if (byEffect) this._callAll(hookName, byEffect, args);
+		}
+	},
+
+	_callAll(hookName, byEffect, args) {
+		for (const callbacks of byEffect.values()) {
 			for (let i = 0; i < callbacks.length; i++) {
 				try {
 					callbacks[i](...args);
@@ -62,7 +101,17 @@ const hooksManager = {
 
 	removeHooks(effectUuid) {
 		for (const perHook of this._byHook.values()) {
-			perHook.delete(effectUuid);
+			perHook.global.delete(effectUuid);
+		}
+		const docs = this._effectDocs.get(effectUuid);
+		if (!docs) return;
+		this._effectDocs.delete(effectUuid);
+		for (const [hookName, documentUuid] of docs) {
+			const byDoc = this._byHook.get(hookName)?.byDoc;
+			const byEffect = byDoc?.get(documentUuid);
+			if (!byEffect) continue;
+			byEffect.delete(effectUuid);
+			if (!byEffect.size) byDoc.delete(documentUuid);
 		}
 	},
 };
@@ -2085,6 +2134,10 @@ export default class CanvasEffect extends PIXI.Container {
 	_videoVisibilityTick() {
 		const sprite = this.sprite;
 		if (!sprite || sprite.destroyed || !sprite.hasVideoAsset) return;
+		// The bounds check walks the effect's display tree. Run it every 4th frame, staggered across effects;
+		// a video coming into view resumes uploads at most 3 frames later.
+		this._videoTickCount = ((this._videoTickCount ?? Math.floor(Math.random() * 4)) + 1) % 4;
+		if (this._videoTickCount !== 0) return;
 		sprite.setVideoUploadsEnabled(!RenderOptimizations.enabled || this._isPotentiallyVisibleOnScreen());
 	}
 
@@ -2704,7 +2757,7 @@ export default class CanvasEffect extends PIXI.Container {
 						maskFilter.masks[staleIndex] = newMesh;
 					}
 					currentMesh = newMesh;
-				});
+				}, { documentUuid: documentObj.uuid });
 				continue;
 			} else if (docName === "MeasuredTemplate" || docName === "Drawing") {
 				// MeasuredTemplates are always instantiated; off-level
@@ -2818,7 +2871,7 @@ export default class CanvasEffect extends PIXI.Container {
 				setTimeout(() => {
 					updateMethod(doc);
 				}, 100);
-			});
+			}, { documentUuid: uuid });
 
 			maskFilter.masks.push(shapeToAdd);
 		}
@@ -2892,7 +2945,7 @@ export default class CanvasEffect extends PIXI.Container {
 			hooksManager.addHook(this.uuid, sourceRefreshHook, (placeable) => {
 				if (placeable?.document?.uuid !== this.data.source) return;
 				recompute();
-			});
+			}, { documentUuid: this.data.source });
 		}
 	}
 
@@ -2982,13 +3035,14 @@ export default class CanvasEffect extends PIXI.Container {
 		let alpha = null;
 
 		if (attachedToSource) {
+			const sourceUuid = this.data.source;
 			hooksManager.addHook(this.uuid, this.getSourceHook("delete"), (doc) => {
 				const uuid = doc.uuid;
 				if (doc !== this.sourceDocument) return;
 				this._source = this._cachedSourceData.position;
 				this._source.uuid = uuid;
 				SequencerEffectManager.objectDeleted(uuid);
-			});
+			}, { documentUuid: sourceUuid });
 
 			if (this.isSourceDestroyed) {
 				SequencerEffectManager.objectDeleted(this.sourceDocument.uuid);
@@ -3020,7 +3074,7 @@ export default class CanvasEffect extends PIXI.Container {
 				hooksManager.addHook(this.uuid, this.getSourceHook("update"), (doc, changed) => {
 					if (doc !== this.sourceDocument || !("hidden" in (changed ?? {}))) return;
 					refreshVisibility();
-				});
+				}, { documentUuid: sourceUuid });
 			}
 
 			if (this.data.attachTo?.bindAlpha || this.data.attachTo?.bindElevation) {
@@ -3032,7 +3086,7 @@ export default class CanvasEffect extends PIXI.Container {
 					if (this.data.attachTo?.bindElevation) {
 						this.updateElevation();
 					}
-				});
+				}, { documentUuid: sourceUuid });
 			}
 
 			if (CONSTANTS.IS_V14) {
@@ -3040,7 +3094,7 @@ export default class CanvasEffect extends PIXI.Container {
 					if (doc !== this.sourceDocument) return;
 					if (changed?.level === undefined) return;
 					this._recomputeRenderable();
-				});
+				}, { documentUuid: sourceUuid });
 			}
 
 			if (this.data.attachTo?.bindAlpha) {
@@ -3049,26 +3103,27 @@ export default class CanvasEffect extends PIXI.Container {
 		}
 
 		if (attachedToTarget) {
+			const targetUuid = this.data.target;
 			hooksManager.addHook(this.uuid, this.getTargetHook("delete"), (doc) => {
 				if (doc !== this.targetDocument) return;
 				this._target = this._cachedTargetData.position;
 				const uuid = doc.uuid;
 				SequencerEffectManager.objectDeleted(uuid);
-			});
+			}, { documentUuid: targetUuid });
 			if (this.isTargetDestroyed) {
 				SequencerEffectManager.objectDeleted(this.targetDocument.uuid);
 			}
 			hooksManager.addHook(this.uuid, this.getTargetHook("update"), (doc) => {
 				if (doc !== this.targetDocument) return;
 				this.updateElevation();
-			});
+			}, { documentUuid: targetUuid });
 
 			if (CONSTANTS.IS_V14) {
 				hooksManager.addHook(this.uuid, this.getTargetHook("update"), (doc, changed) => {
 					if (doc !== this.targetDocument) return;
 					if (changed?.level === undefined) return;
 					this._recomputeRenderable();
-				});
+				}, { documentUuid: targetUuid });
 			}
 		}
 
@@ -3091,7 +3146,8 @@ export default class CanvasEffect extends PIXI.Container {
 					(doc) => {
 						if (tiedDocument !== doc) return;
 						SequencerEffectManager.objectDeleted(doc.uuid);
-					}
+					},
+					{ documentUuid: tiedDocument.uuid }
 				);
 			}
 		}

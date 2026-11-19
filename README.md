@@ -20,7 +20,7 @@ To go back to the original, uninstall this fork and install Sequencer from the F
 
 - Fixes for open upstream bug reports, among them: persistent effects and sounds placed on a scene location not coming back after a reload, located sounds staying silent on Foundry V14, `.alwaysForGMs()` ignoring `.volume()`, `.crosshair().persist()` on V14, `bindVisibility` on templates and regions, VP9 spritesheet conversion hanging in Chrome, `.waitUntilFinished()` not waiting for token fades.
 - Rendering optimizations (can be turned off with the **Enable Rendering Optimizations** setting): mask caching, skipping effects with filters or masks while off-screen, no video uploads for hidden or off-screen video effects.
-- Cheaper per-frame work for sounds placed on the canvas and for attached `.stretchTo()` effects.
+- Less work per frame: sounds placed on the canvas, attached `.stretchTo()` effects, effect animations, hooks for attached objects, video visibility checks, `.motion()` and reading saved persistent effects.
 - `.motion()` sections can be played with `.play({ remote: true })`.
 
 Bug reports for this fork: [issues](https://github.com/nschoenwald/niks-sequencer/issues). Please don't report problems with the fork to the upstream project.

@@ -1,5 +1,12 @@
 ## Changelog
 
+# Version 4.3.0.n6
+- *Performance* - Effect animations (`.animateProperty()`, `.loopProperty()`, fades, scale-ins and similar) no longer create temporary data every frame, which means less memory churn and fewer garbage-collection stutters with many animated effects
+- *Performance* - Moving or updating a token, tile or other object only runs the checks of effects that are attached to it, instead of every effect in the scene checking whether it was meant
+- *Performance* - Video effects check whether they are on screen every 4th frame instead of every frame
+- *Performance* - Reading saved persistent effects, sounds and motions no longer re-reads all of them every time, for example for each token that is created or pasted
+- *Performance* - Running `.motion()` animations no longer look up their token by ID every frame
+
 # Version 4.3.0.n5
 - *Fork* - Released as **Nik's Sequencer**, a maintained fork of Sequencer. It keeps the module id `sequencer`, so modules that need Sequencer keep working. Install it with the manifest link in the README
 - *Sounds* - Sounds placed on the canvas are much cheaper while they play. Their wall check is only redone when the sound, a listener, a wall or a region changes, instead of every frame

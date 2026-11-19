@@ -443,8 +443,12 @@ class PlaceableMotionAggregator {
 	tick() {
 		if (this.tornDown) return;
 		try {
-			// Resolve fresh each tick; the placeable may have been deleted.
-			const placeable = fromUuidSync(this.uuid)?.object ?? null;
+			// Reuse the placeable while it is alive and still its document's object; resolve the uuid again
+			// only after it was destroyed or redrawn (deleted documents resolve to null and tear down).
+			let placeable = this.placeable;
+			if (!placeable || placeable.destroyed || placeable.document?.object !== placeable) {
+				placeable = fromUuidSync(this.uuid)?.object ?? null;
+			}
 			const target = placeable ? canvaslib.getMotionTarget(placeable) : null;
 			if (!target || target.destroyed) {
 				this.teardown(false);

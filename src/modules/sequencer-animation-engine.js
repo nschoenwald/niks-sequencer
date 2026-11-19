@@ -28,6 +28,7 @@ const SequencerAnimationEngine = {
 					attribute.value = 0;
 					attribute.coreValue = 0;
 					attribute.isFunkyProperty = attribute.propertyName.startsWith("scale.");
+					attribute.path = attribute.propertyName.split(".");
 
 					attribute.duration = attribute.duration ?? 0;
 					attribute.durationDone = timeDifference ?? 0;
@@ -102,43 +103,91 @@ const SequencerAnimationEngine = {
 	nextFrame() {
 		if (this._animations.length === 0) {
 			this._coreValues = {};
+			this._storedEntries.clear();
 			return;
 		}
 
-		this._storedValues = {};
+		// Per-frame values are kept in reused entries (one per target property) instead of a fresh object
+		// map every frame; _touched lists the entries written this frame, in first-touch order.
+		this._frame++;
+		this._touched.length = 0;
 
-		this._animations.forEach((animation) => this._animate(animation));
+		const animations = this._animations;
+		for (let i = 0; i < animations.length; i++) {
+			this._animate(animations[i]);
+		}
 
-		for (let delta of Object.values(this._storedValues)) {
+		for (let i = 0; i < this._touched.length; i++) {
+			const delta = this._touched[i];
 			try {
-				lib.deep_set(delta.target, delta.propertyName, delta.value);
+				lib.deep_set(delta.target, delta.path, delta.value);
 			} catch (err) {
 			}
 		}
 
-		this._animations = this._animations.filter((animation) => !animation.complete);
+		// Forget entries no animation wrote this frame, so ended targets aren't kept alive
+		if (this._storedEntries.size > this._touched.length) {
+			for (const [targetId, entry] of this._storedEntries) {
+				if (entry.frame !== this._frame) this._storedEntries.delete(targetId);
+			}
+		}
 
+		// Drop finished animations in place
+		const list = this._animations;
+		let write = 0;
+		for (let read = 0; read < list.length; read++) {
+			if (!list[read].complete) list[write++] = list[read];
+		}
+		list.length = write;
 	},
 
 	_coreValues: {},
-	_storedValues: {},
+	_storedEntries: new Map(),
+	_touched: [],
+	_frame: 0,
+
+	/**
+	 * The value being built for a target property this frame
+	 * @private
+	 */
+	_storedValue(attribute) {
+		let entry = this._storedEntries.get(attribute.targetId);
+		if (!entry) {
+			entry = { frame: -1, value: 0, target: null, path: null, targetId: attribute.targetId };
+			this._storedEntries.set(attribute.targetId, entry);
+		}
+		if (entry.frame !== this._frame) {
+			entry.frame = this._frame;
+			entry.value = this._coreValues[attribute.targetId].value;
+			entry.target = attribute.target;
+			entry.path = attribute.path;
+			this._touched.push(entry);
+		}
+		return entry;
+	},
 
 	_animate(animation) {
 		animation.totalDt += this.ticker.elapsedMS;
 
-		animation.attributes.filter((attribute) => {
-			return !attribute.complete && animation.totalDt >= attribute.delay;
-		}).forEach((attr) => {
-			this._animateAttribute(attr);
-			if(attr.finishing){
-				attr.complete = true;
-				if (this._coreValues[attr.targetId]) {
-					delete this._coreValues[attr.targetId];
+		const attributes = animation.attributes;
+		let remaining = 0;
+		for (let i = 0; i < attributes.length; i++) {
+			const attr = attributes[i];
+			if (attr.complete) continue;
+			if (animation.totalDt >= attr.delay) {
+				this._animateAttribute(attr);
+				if (attr.finishing) {
+					attr.complete = true;
+					if (this._coreValues[attr.targetId]) {
+						delete this._coreValues[attr.targetId];
+					}
+					continue;
 				}
 			}
-		});
+			remaining++;
+		}
 
-		animation.complete = animation.attributes.filter((attribute) => !attribute.complete).length === 0;
+		animation.complete = remaining === 0;
 
 		if (animation.complete) {
 			animation.resolve();
@@ -146,22 +195,16 @@ const SequencerAnimationEngine = {
 	},
 
 	_animateAttribute(attribute) {
+		attribute.path ??= attribute.propertyName.split(".");
 
 		if (this._coreValues[attribute.targetId] === undefined) {
 			this._coreValues[attribute.targetId] = {
 				id: attribute.id,
-				value: lib.deep_get(attribute.target, attribute.propertyName)
+				value: lib.deep_get(attribute.target, attribute.path)
 			};
 		}
 
-		if (this._storedValues[attribute.targetId] === undefined) {
-			this._storedValues[attribute.targetId] = {
-				value: this._coreValues[attribute.targetId].value,
-				target: attribute.target,
-				propertyName: attribute.propertyName,
-				targetId: attribute.targetId
-			};
-		}
+		const stored = this._storedValue(attribute);
 
 		if (attribute?.looping && attribute?.indefinite) {
 			this._handleIndefiniteLoop(attribute);
@@ -174,15 +217,15 @@ const SequencerAnimationEngine = {
 		// This is absolutely horrendous, but 50% of the time, it works 90% of the time.
 		if (attribute.absolute) {
 			this._coreValues[attribute.targetId].value = attribute.value;
-			const delta = this._coreValues[attribute.targetId].value - this._storedValues[attribute.targetId].value;
-			this._storedValues[attribute.targetId].value += delta;
+			const delta = this._coreValues[attribute.targetId].value - stored.value;
+			stored.value += delta;
 		} else {
 			if (attribute.isFunkyProperty) {
 				const coreValue = this._coreValues[attribute.targetId].value;
 				attribute.delta = (coreValue * attribute.value) - coreValue;
-				this._storedValues[attribute.targetId].value += attribute.delta;
+				stored.value += attribute.delta;
 			} else {
-				this._storedValues[attribute.targetId].value += attribute.value;
+				stored.value += attribute.value;
 			}
 		}
 

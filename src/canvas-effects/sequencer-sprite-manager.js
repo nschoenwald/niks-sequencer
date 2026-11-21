@@ -118,6 +118,27 @@ class FlipbookAsset extends Asset {
 		// TODO maybe add spritesheet-like ref counting for flipbooks too?
 	}
 }
+/**
+ * Seeks the video and resolves once its frame at that time is available. Also resolves if the video
+ * is unloaded or errors mid-seek, so callers never wait forever.
+ *
+ * @param {HTMLVideoElement} video
+ * @param {number} time
+ * @returns {Promise<void>}
+ */
+function seekVideo(video, time) {
+	return new Promise((resolve) => {
+		const listeners = new AbortController();
+		const finish = () => {
+			listeners.abort();
+			resolve();
+		};
+		video.addEventListener("seeked", finish, { signal: listeners.signal });
+		video.addEventListener("emptied", finish, { signal: listeners.signal });
+		video.addEventListener("error", finish, { signal: listeners.signal });
+		video.currentTime = time;
+	});
+}
 //#endregion
 //#region Playback controls
 class PlaybackControls {
@@ -279,11 +300,17 @@ export class SequencerSpriteManager extends PIXI.Container {
 	/** @type {Map<string | undefined, VideoAsset | VideoSpritesheetAsset | TextureAsset | FlipbookAsset>} */
 	#relatedAssets = new Map();
 
+	/** @type {Map<string, Promise<VideoAsset | VideoSpritesheetAsset | TextureAsset | FlipbookAsset | undefined>>} */
+	#pendingLoads = new Map();
+
+	/** @type {string | undefined} */
+	#requestedPath;
+
+	/** @type {{ filePath: string, promise: Promise<void> } | null} */
+	#pendingActivation = null;
+
 	/** @type {VideoPlaybackControls | SpritePlaybackControls | null} */
 	#playbackControls;
-
-	/** @type {Promise<void> | undefined} */
-	#preloadingPromise;
 
 	/** @type {TilingSpriteMesh | null} */
 	#managedSprite;
@@ -305,13 +332,6 @@ export class SequencerSpriteManager extends PIXI.Container {
 		scaleX: 1,
 		scaleY: 1,
 	};
-
-	get preloadingPromise() {
-		if (this.#preloadingPromise) {
-			return this.#preloadingPromise;
-		}
-		return Promise.resolve();
-	}
 
 	/**
 	 * @param {import("../modules/sequencer-file.js").SequencerFile} file
@@ -402,30 +422,63 @@ export class SequencerSpriteManager extends PIXI.Container {
 	 * @param {string | undefined} filePath
 	 */
 	async activate(filePath) {
-		if (!filePath || this.#activeAssetPath === filePath) {
+		if (!filePath) {
+			return;
+		}
+		this.#requestedPath = filePath;
+		if (this.#activeAssetPath === filePath) {
+			return;
+		}
+		// Per-frame callers repeat the request while it is pending; restarting would re-seek every frame.
+		if (this.#pendingActivation?.filePath === filePath) {
+			return this.#pendingActivation.promise;
+		}
+		const promise = this.#activateWhenReady(filePath);
+		this.#pendingActivation = { filePath, promise };
+		try {
+			await promise;
+		} finally {
+			if (this.#pendingActivation?.promise === promise) {
+				this.#pendingActivation = null;
+			}
+		}
+	}
+
+	/**
+	 * @param {string} filePath
+	 */
+	async #activateWhenReady(filePath) {
+		// Only the most recent request switches, regardless of which load finishes last.
+		const isStale = () =>
+			this.destroyed || this.#requestedPath !== filePath || this.#activeAssetPath === filePath;
+
+		const nextAsset = await this.#getOrLoadAsset(filePath);
+		if (!nextAsset || isStale()) {
 			return;
 		}
 
-		let nextAsset = this.#relatedAssets.get(filePath);
-		// new file is already being loaded, nothing more to do
-		if (this.#relatedAssets.has(filePath) && nextAsset == null) {
-			return;
-		}
-
-		if (!nextAsset) {
-			this.#relatedAssets.set(filePath, null);
-			nextAsset = await this.#loadAsset(filePath);
-			if (this.destroyed) {
+		// A seeking video uploads no frame, so a never-shown one would render blank. The old asset stays
+		// on screen until the new video has its frame, and the swap skips the time sync to avoid a second seek.
+		const seekBeforeSwap = nextAsset instanceof VideoAsset && !!this.#playbackControls;
+		if (seekBeforeSwap) {
+			await seekVideo(nextAsset.video, this.#playbackControls.currentTime);
+			if (isStale()) {
 				return;
 			}
-			this.#relatedAssets.set(filePath, nextAsset);
+			// A compiled spritesheet may have replaced and destroyed the video during the seek.
+			if (this.#relatedAssets.get(filePath) !== nextAsset) {
+				return this.#activateWhenReady(filePath);
+			}
 		}
 
-		if (this.#activateAsset(nextAsset)) {
+		if (this.#activateAsset(nextAsset, { syncTime: !seekBeforeSwap })) {
 			this.#activeAssetPath = filePath;
 		}
 		if (this.#sharedSpriteConfig.isPersisted && !this.#sharedSpriteConfig.tiling) {
 			requestAnimationFrame(async () => {
+				if (this.destroyed) {
+					return;
+				}
 				const minimumScale = this.#calculateMinimumSpritesheetScale();
 				const spritesheet = await SequencerFileCache.requestCompiledSpritesheet(filePath, {
 					minimumScale: minimumScale,
@@ -433,23 +486,18 @@ export class SequencerSpriteManager extends PIXI.Container {
 				if (!spritesheet) {
 					return;
 				}
-				// The effect may have been destroyed while the spritesheet was compiling.
-				// Don't register a spritesheet reference that nothing would release.
+				const asset = new VideoSpritesheetAsset({ filepath: filePath, spritesheet });
+				// Constructing the asset takes a spritesheet reference; destroying it gives the reference back.
 				if (this.destroyed) {
+					asset.destroy();
 					return;
 				}
-				// The asset this spritesheet replaces (usually the VideoAsset for the same file).
-				// It used to be dropped from #relatedAssets without being destroyed when another
-				// file was active by now, leaking its video element, blob URL and GPU texture.
 				const replacedAsset = this.#relatedAssets.get(filePath);
-				const asset = new VideoSpritesheetAsset({ filepath: filePath, spritesheet });
 				this.#relatedAssets.set(filePath, asset);
 				if (this.#activeAssetPath === filePath) {
 					this.#activateAsset(asset);
 				}
-				if (replacedAsset && replacedAsset !== asset) {
-					replacedAsset.destroy();
-				}
+				replacedAsset?.destroy();
 			});
 		}
 	}
@@ -480,11 +528,16 @@ export class SequencerSpriteManager extends PIXI.Container {
 		this.#relatedAssets.get(filepath)?.destroy();
 		this.#relatedAssets.delete(filepath);
 	}
-	async preloadVariants() {
-		if (!this.#preloadingPromise) {
-			return (this.#preloadingPromise = this.#preloadVariants());
+	/**
+	 * Loads the given files into the cache so activating them later skips the load.
+	 *
+	 * @param {string[]} filePaths
+	 */
+	preloadFiles(filePaths) {
+		if (this.#activeAssetPath === "TEXT" || !this.#file || this.#file.isFlipbook) {
+			return Promise.resolve();
 		}
-		return this.#preloadingPromise;
+		return Promise.allSettled(filePaths.map((filePath) => this.#getOrLoadAsset(filePath)));
 	}
 	destroy() {
 		this.#playbackControls?.destroy();
@@ -636,23 +689,32 @@ export class SequencerSpriteManager extends PIXI.Container {
 		}
 	}
 
-	async #preloadVariants() {
-		if (this.#activeAssetPath === "TEXT") {
-			return;
+	/**
+	 * Returns the loaded asset for the path, sharing one load between concurrent callers.
+	 * Resolves to undefined if the manager was destroyed while loading.
+	 *
+	 * @param {string} filePath
+	 */
+	#getOrLoadAsset(filePath) {
+		const loadedAsset = this.#relatedAssets.get(filePath);
+		if (loadedAsset) {
+			return Promise.resolve(loadedAsset);
 		}
-		if (!this.#file || this.#file.isFlipbook) {
-			return;
+		let pendingLoad = this.#pendingLoads.get(filePath);
+		if (!pendingLoad) {
+			pendingLoad = this.#loadAsset(filePath)
+				.then((asset) => {
+					if (this.destroyed) {
+						asset?.destroy();
+						return undefined;
+					}
+					this.#relatedAssets.set(filePath, asset);
+					return asset;
+				})
+				.finally(() => this.#pendingLoads.delete(filePath));
+			this.#pendingLoads.set(filePath, pendingLoad);
 		}
-		/** @type {string[]} */
-		const allFiles = this.#file.getAllFiles();
-
-		for (const filePath of allFiles) {
-			if (this.#relatedAssets.has(filePath)) {
-				continue;
-			}
-			const asset = await this.#loadAsset(filePath);
-			this.#relatedAssets.set(filePath, asset);
-		}
+		return pendingLoad;
 	}
 
 	/**
@@ -699,9 +761,10 @@ export class SequencerSpriteManager extends PIXI.Container {
 
 	/**
 	 * @param {VideoAsset | VideoSpritesheetAsset | TextureAsset | FlipbookAsset} nextAsset
+	 * @param {{ syncTime?: boolean }} [options] - `syncTime: false` keeps the next asset's own playback time
 	 * @returns
 	 */
-	#activateAsset(nextAsset) {
+	#activateAsset(nextAsset, { syncTime = true } = {}) {
 		let view;
 		let controls;
 		const tiling = this.#sharedSpriteConfig.tiling;
@@ -724,7 +787,7 @@ export class SequencerSpriteManager extends PIXI.Container {
 		}
 
 		// apply current values
-		this.#applyPreviousValues(view, controls);
+		this.#applyPreviousValues(view, controls, syncTime);
 
 		if (this.#playbackControls) {
 			this.#playbackControls.destroy();
@@ -752,8 +815,9 @@ export class SequencerSpriteManager extends PIXI.Container {
 	 *
 	 * @param {TilingSpriteMesh} view
 	 * @param {VideoPlaybackControls | SpritePlaybackControls | null} controls
+	 * @param {boolean} syncTime
 	 */
-	#applyPreviousValues(view, controls) {
+	#applyPreviousValues(view, controls, syncTime) {
 		if (this.managedSprite) {
 			const prev = this.managedSprite;
 			view.tint = prev.tint;
@@ -781,7 +845,9 @@ export class SequencerSpriteManager extends PIXI.Container {
 			controls.volume = prev.volume;
 			controls.loop = prev.loop;
 			controls.playbackRate = prev.playbackRate;
-			controls.currentTime = prev.currentTime;
+			if (syncTime) {
+				controls.currentTime = prev.currentTime;
+			}
 			if (prev.isPlaying) {
 				controls.play();
 			} else {

@@ -11,15 +11,14 @@ export async function decodeWebmFrames({ metadata, frameData, codec }) {
 	if (frameData.length === 0) {
 		return [];
 	}
-	const config = {
+	let config = {
+	  // Software decoders return planar YUV frames, so the alpha plane can be read unchanged.
+	  // Hardware decoders may return converted RGB frames with limited colour and alpha range (16 to 235)
+		hardwareAcceleration: "prefer-software",
 		codec: codec === "VP8" ? "vp8" : codec === "VP9" ? "vp09.00.31.08" : codec,
 		codedWidth: metadata.codecSize.width,
 		codedHeight: metadata.codecSize.height,
 		colorSpace: {},
-		// Every decoded frame is kept until flush() resolves. Hardware decoders (used for VP9 in Chrome) only
-		// have a small pool of output frames, and stall or get reclaimed ("Codec reclaimed") once it runs out.
-		// Conversion happens once and is cached, so software decoding costs little.
-		hardwareAcceleration: "prefer-software",
 	};
 	const support = await VideoDecoder.isConfigSupported(config);
 	if (!support?.supported) {

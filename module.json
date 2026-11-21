@@ -2,7 +2,7 @@
   "id": "sequencer",
   "title": "Nik's Sequencer",
   "description": "A maintained fork of Sequencer by Fantasy Computerworks, with bug fixes and performance improvements. Keeps the module id \"sequencer\", so modules that depend on Sequencer keep working. Play effects on the canvas and create complex sequences of actions.",
-  "version": "4.3.0.n6",
+  "version": "4.3.1.n1",
   "library": "false",
   "compatibility": {
     "minimum": "13",

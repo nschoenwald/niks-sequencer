@@ -1269,6 +1269,12 @@ declare global {
     persistUntilUpdate(): this;
 
     /**
+     * Ties the motion to any number of documents in Foundry - if those get deleted, the motion is ended the same way
+     * as Sequencer.MotionManager.endMotions().
+     */
+    tieToDocuments(inOrigin: TieToOrigin): this;
+
+    /**
      * Draws the sprite at the given ordering value while the motion runs, then restores its normal order when it ends.
      * A higher value draws in front. Orders the sprite only against other objects at the same elevation.
      */
@@ -1593,6 +1599,11 @@ declare global {
 	   * This method only modifies .persist()-ed sounds and causes them to not immediately end, but stick around for the given duration passed to this method.
 	   */
 	  extraEndDuration(inExtraDuration: number): this;
+
+    /**
+     * Ties the sound to any number of documents in Foundry - if those get deleted, the sound is ended.
+     */
+    tieToDocuments(inOrigin: TieToOrigin): this;
   }
 
 	type PanSoundOptions = {
@@ -2129,6 +2140,13 @@ declare global {
     ): MotionDisplacement | null;
   }
 
+  type CancellableCrosshairPromise = Promise<TemplateData> & {
+    /**
+     * Cancels the crosshair as if the user had right-clicked. Runs the CANCEL callback and resolves the promise with false.
+     */
+    cancel(): void;
+  };
+
   abstract class SequencerCrosshair {
     CALLBACKS: CrosshairCallbacks;
     PLACEMENT_RESTRICTIONS: CrosshairPlacementRestrictions;
@@ -2139,7 +2157,7 @@ declare global {
     show(
       crosshair?: Partial<CrosshairData>,
       callbacks?: CrosshairCallbackData
-    ): Promise<TemplateData>;
+    ): CancellableCrosshairPromise;
 
     /**
      * Show a configurable crosshair based a foundry PlaceableObject
@@ -2148,7 +2166,7 @@ declare global {
       obj: VisibleFoundryTypes,
       crosshair?: CrosshairData,
       callbacks?: CrosshairCallbackData
-    ): Promise<TemplateData>;
+    ): CancellableCrosshairPromise;
 
     /**
      * Collect overlapping placeable objects of a crosshair of a given placeable type

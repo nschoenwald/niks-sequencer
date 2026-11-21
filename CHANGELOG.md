@@ -1,5 +1,35 @@
 ## Changelog
 
+# Version 4.3.1.n1
+- *Fork* - Updated to Sequencer 4.3.1 (see below). Where upstream fixed the same bug as this fork, its fix is now used. All fixes and optimizations it doesn't have are kept
+- *Sounds* - Fixed looping sounds that restart behind a wall staying muffled after the wall no longer blocks them
+
+# Version 4.3.1
+- *Sequencer* - Fixed `.play({ remote: true })` not playing the sequence for other players (thank you MrVauxs on github!)
+- *Sequencer* - Fixed `.delay()` being ignored when using `.play({ remote: true })`
+- *Sequencer* - Fixed Foundry loading slowly when modules register large numbers of entries in the Sequencer Database (thank you Codas on github!)
+- *Sequencer* - Fixed Foundry loading slowly for GMs in worlds with many tokens (thank you ChrisRosser on github!)
+- *Effects* - Fixed `.name()` not passing the effect's `offset` to the subsequent effects
+- *Effects* - Fixed just-in-time spritesheet generation producing spritesheets with incorrect transparency, cropping, scaling, and colors (thank you Codas on github!)
+- *Effects* - Fixed effects using `.stretchTo()` or `.rotateTowards()` with `attachTo: true` not ending when their target was deleted, and not updating their elevation when the target's elevation changed
+- *Effects* - Fixed effects using `.stretchTo()` with `attachTo: true` trailing slightly behind moving tokens, and sometimes staying the wrong length after the distance changed
+- *Effects* - Fixed persistent effects placed at a location not coming back after reloading Foundry or switching scenes
+- *Effects* - Fixed effects using `.scaleToObject()` with `attachTo` shrinking down to one grid square while playing their ending after the object they were attached to was deleted
+- *Effects* - Fixed effects using `.persist(true, { persistTokenPrototype: true })` being lost when the token was deleted, such as when teleporting it to another scene
+- *Effects* - Fixed effects using `.stretchTo()` with `attachTo: true` sometimes showing the animation for the wrong distance after the distance changed quickly, and leaking video memory
+- *Effects* - Fixed effects using `.stretchTo()` with `attachTo: true` briefly disappearing when the distance changed enough to switch to a shorter or longer animation
+- *Effects* - Fixed persistent effects leaking memory when they ended, or changed distance with `.stretchTo()`, while their animation was still being prepared in the background
+- *Effects* - Fixed effects using `.stretchTo()` with `attachTo: true` showing a stretched or squashed animation for a moment before switching to the one for the new distance, and loading every distance's animation up front when also using `.attachTo()`
+- *Sounds* - Added `.tieToDocuments()`, which ends the sound when any of the given documents are deleted
+- *Sounds* - Fixed persistent sounds placed at a location not coming back after reloading Foundry or switching scenes
+- *Sounds* - Fixed `.volume()` being ignored on sounds placed at a location when using `.alwaysForGMs()`, or when a player controls the token the sound is on
+- *Sounds* - Fixed sounds using `.atLocation()` on a region or template not being heard
+- *Animations* - Fixed `.waitUntilFinished()` not waiting for token animations to finish, which could leave a token invisible after fading it out and back in around `.teleportTo()`
+- *Motions* - Added `.tieToDocuments()`, which ends the motion when any of the given documents are deleted
+- *Motions* - Fixed `.moveTo()` not accepting names from `.name()` or `.addNamedLocation()`
+- *Motions* - Fixed `.noise()` not working when no `duration` was given (thank you MrVauxs on github!)
+- *Motions* - Fixed `.motion()` not working with `.play({ remote: true })`
+- *Crosshairs* - Added a `cancel()` method to the promise returned by `Sequencer.Crosshair.show()` and `Sequencer.Crosshair.showToken()`, which cancels the crosshair as if the user had right-clicked
 # Version 4.3.0.n6
 - *Performance* - Effect animations (`.animateProperty()`, `.loopProperty()`, fades, scale-ins and similar) no longer create temporary data every frame, which means less memory churn and fewer garbage-collection stutters with many animated effects
 - *Performance* - Moving or updating a token, tile or other object only runs the checks of effects that are attached to it, instead of every effect in the scene checking whether it was meant

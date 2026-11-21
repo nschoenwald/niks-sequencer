@@ -274,6 +274,8 @@ export default class CanvasEffect extends PIXI.Container {
 
 		this._cachedSourceData = {};
 		this._cachedTargetData = {};
+		this._sourceDeleted = false;
+		this._targetDeleted = false;
 
 		this.uuid = false;
 
@@ -879,7 +881,7 @@ export default class CanvasEffect extends PIXI.Container {
 			return SequencerEffectManager.getPositionForUUID(this.data.source);
 		}
 
-		if (this.source instanceof foundry.canvas.placeables.PlaceableObject && this.isSourceDestroyed) {
+		if (this._sourceDeleted || (this.source instanceof foundry.canvas.placeables.PlaceableObject && this.isSourceDestroyed)) {
 			return {
 				...this._cachedSourceData,
 			};
@@ -967,7 +969,7 @@ export default class CanvasEffect extends PIXI.Container {
 			);
 		}
 
-		if (this.target instanceof foundry.canvas.placeables.PlaceableObject && this.isTargetDestroyed) {
+		if (this._targetDeleted || (this.target instanceof foundry.canvas.placeables.PlaceableObject && this.isTargetDestroyed)) {
 			return {
 				...this._cachedTargetData,
 			};
@@ -1133,38 +1135,12 @@ export default class CanvasEffect extends PIXI.Container {
 		}
 
 		if (offsetMap) {
-			if (offsetMap.missed) {
-				const missedOffset =
-					this._offsetCache[key]["nameCache"][offsetMapName]?.missedOffset ||
-					canvaslib.calculate_missed_position(
-						offsetMap.sourceObj,
-						offsetMap.targetObj,
-						offsetMap.twister
-					);
-				this._offsetCache[key]["nameCache"][offsetMapName].missedOffset =
-					missedOffset;
-				offset.x -= missedOffset.x;
-				offset.y -= missedOffset.y;
-			}
-
-			const obj = offsetMap.targetObj || offsetMap.sourceObj;
-			const multiplier =
-				offsetMap.randomOffset?.source || offsetMap.randomOffset?.target;
-
-			if (obj && multiplier) {
-				let randomOffset =
-					this._offsetCache[key]["nameCache"][offsetMapName]?.randomOffset ||
-					canvaslib.get_random_offset(obj, multiplier, offsetMap.twister);
-				this._offsetCache[key]["nameCache"][offsetMapName].randomOffset =
-					randomOffset;
-				offset.x -= randomOffset.x;
-				offset.y -= randomOffset.y;
-			}
-
-			if (offsetMap.offset) {
-				offset.x += offsetMap.offset.x;
-				offset.y += offsetMap.offset.y;
-			}
+			let namedOffset = canvaslib.get_named_location_offset(offsetMap, {
+				prefersSourceSide: source && this.data.source === this.data.target,
+				cache: this._offsetCache[key]["nameCache"][offsetMapName],
+			});
+			offset.x -= namedOffset.x;
+			offset.y -= namedOffset.y;
 		}
 
 		return offset;
@@ -1180,15 +1156,13 @@ export default class CanvasEffect extends PIXI.Container {
 	_setupOffsetMap(inOffsetMap) {
 		if (!inOffsetMap.setup) {
 			inOffsetMap.setup = true;
-			inOffsetMap.sourceObj = inOffsetMap.source
-				? this._validateObject(inOffsetMap.source)
-				: false;
-			inOffsetMap.targetObj = inOffsetMap.target
-				? this._validateObject(inOffsetMap.target)
-				: false;
-			const repetition = this.data.repetition % inOffsetMap.repetitions;
-			const seed = lib.get_hash(`${inOffsetMap.seed}-${repetition}`);
-			inOffsetMap.twister = lib.createMersenneTwister(seed);
+			Object.assign(
+				inOffsetMap,
+				canvaslib.resolve_named_location(inOffsetMap, {
+					repetition: this.data.repetition,
+					sceneId: this.data.sceneId,
+				})
+			);
 		}
 
 		return inOffsetMap;
@@ -2202,6 +2176,7 @@ export default class CanvasEffect extends PIXI.Container {
 		if (this.isSourceDestroyed) {
 			this._source = this.sourcePosition;
 			this._source.uuid = this.uuid;
+			this._sourceDeleted = true;
 			SequencerEffectManager.endEffects({ effects: this });
 		}
 	}
@@ -2209,6 +2184,7 @@ export default class CanvasEffect extends PIXI.Container {
 	_checkTargetDestroyed() {
 		if (this.isTargetDestroyed) {
 			this._target = this.targetPosition;
+			this._targetDeleted = true;
 			SequencerEffectManager.endEffects({ effects: this });
 		}
 	}
@@ -2331,9 +2307,7 @@ export default class CanvasEffect extends PIXI.Container {
 
 		sprite.volume = (this.data.volume ?? 0) * game.settings.get("core", "globalInterfaceVolume");
 
-		if (this._isRangeFind && this.data.stretchTo && (this.data.attachTo?.active || this.data.stretchTo?.attachTo?.active)) {
-			sprite.preloadVariants()
-		}
+		this._preloadAdjacentDistanceFiles();
 
 		if (this.data.text) {
 			const text = this.data.text.text;
@@ -3041,6 +3015,7 @@ export default class CanvasEffect extends PIXI.Container {
 				if (doc !== this.sourceDocument) return;
 				this._source = this._cachedSourceData.position;
 				this._source.uuid = uuid;
+				this._sourceDeleted = true;
 				SequencerEffectManager.objectDeleted(uuid);
 			}, { documentUuid: sourceUuid });
 
@@ -3107,6 +3082,7 @@ export default class CanvasEffect extends PIXI.Container {
 			hooksManager.addHook(this.uuid, this.getTargetHook("delete"), (doc) => {
 				if (doc !== this.targetDocument) return;
 				this._target = this._cachedTargetData.position;
+				this._targetDeleted = true;
 				const uuid = doc.uuid;
 				SequencerEffectManager.objectDeleted(uuid);
 			}, { documentUuid: targetUuid });
@@ -3180,10 +3156,12 @@ export default class CanvasEffect extends PIXI.Container {
 	 * @returns {Object}
 	 * @private
 	 */
-	async _getDistanceScaling(distance, textureWidth) {
-		// Keyed on the texture width too: a range variant swap keeps the distance but changes the width
-		if (!this._distanceCache || this._distanceCache?.distance !== distance
-			|| this._distanceCache?.textureWidth !== textureWidth) {
+	_getDistanceScaling(distance, textureWidth) {
+		if (
+			!this._distanceCache ||
+			this._distanceCache.distance !== distance ||
+			this._distanceCache.textureWidth !== textureWidth
+		) {
 			let scaleX = 1.0;
 			let scaleY = 1.0;
 
@@ -3211,36 +3189,84 @@ export default class CanvasEffect extends PIXI.Container {
 	}
 
 	/**
-	 * Applies the distance scaling to the sprite based on the previous method
+	 * Stretches the sprite synchronously so it lands in the current frame.
+	 * Returns a promise only when switching to another distance variant.
+	 * The switch starts first because a preloaded variant swaps in synchronously.
 	 *
-	 * @returns {Promise<void>}
+	 * @returns {Promise<boolean>|undefined}
 	 * @private
 	 */
-	async _applyDistanceScaling() {
+	_applyDistanceScaling() {
+		const { ray, distance } = this._measureStretch();
+		this._updateCurrentFilePath(distance);
+		let pendingVariant;
+		if (this._currentFilePath && this.sprite.activePath !== this._currentFilePath) {
+			pendingVariant = this._activateDistanceVariant();
+		}
+		this._stretchSprite(ray, distance);
+		return pendingVariant;
+	}
+
+	/**
+	 * Activates the current distance variant, then re-stretches at the latest positions.
+	 * Resolves to `false` if the effect ended or this call did not switch the variant.
+	 *
+	 * @returns {Promise<boolean>}
+	 * @private
+	 */
+	async _activateDistanceVariant() {
 		const initialization = this._initialization;
 		const sprite = this.sprite;
-		// The ticker starts a new call every frame without awaiting the last one. A call that waited on a
-		// variant load must not apply its stale ray once newer calls have run.
-		const scalingCall = this._distanceScalingCall = (this._distanceScalingCall ?? 0) + 1;
-		const isStale = () => this._initialization !== initialization || this._ended || this.destroyed ||
-			this.sprite !== sprite || sprite.destroyed || this._distanceScalingCall !== scalingCall;
+		const requestedPath = this._currentFilePath;
+		await sprite.activate(requestedPath);
+		if (this._initialization !== initialization || this._ended || this.destroyed ||
+			this.sprite !== sprite || sprite.destroyed) return false;
+		if (sprite.activePath !== requestedPath) return false;
+		const { ray, distance } = this._measureStretch();
+		this._stretchSprite(ray, distance);
+		this._setAnchors();
+		this._preloadAdjacentDistanceFiles();
+		return true;
+	}
+
+	/**
+	 * Preloads the distance files on either side of the current one, for stretched effects whose length
+	 * changes while they play.
+	 *
+	 * @private
+	 */
+	_preloadAdjacentDistanceFiles() {
+		if (!this._isRangeFind || !this.data.stretchTo) return;
+		if (!this.data.attachTo?.active && !this.data.stretchTo.attachTo) return;
+		const { distance } = this._measureStretch();
+		this.sprite.preloadFiles(this._file.getAdjacentFilesForDistance(distance));
+	}
+
+	/**
+	 * @returns {{ ray: foundry.canvas.geometry.Ray, distance: number }}
+	 * @private
+	 */
+	_measureStretch() {
 		const ray = new foundry.canvas.geometry.Ray(this.sourcePosition, this.targetPosition);
+		const distance = ray.distance / (this.data.scale.x ?? 1.0);
+		return { ray, distance };
+	}
+
+	/**
+	 * @param {foundry.canvas.geometry.Ray} ray
+	 * @param {number} distance
+	 * @private
+	 */
+	_stretchSprite(ray, distance) {
+		const sprite = this.sprite;
+		const texture = sprite.texture;
 
 		this._rotateTowards(ray);
 
-		const distance = ray.distance / (this.data.scale.x ?? 1.0);
-
-		this._updateCurrentFilePath(distance)
-		await sprite.activate(this._currentFilePath)
-		if (isStale()) return;
-		const texture = sprite.texture
-
-		let { scaleX, scaleY } = await this._getDistanceScaling(distance, texture.width);
-		if (isStale()) return;
+		const { scaleX, scaleY } = this._getDistanceScaling(distance, texture.width);
 
 		if (this.data.attachTo?.active) {
-			const { x, y } = this.sourcePosition;
-			this.position.set(x, y);
+			this.position.set(ray.A.x, ray.A.y);
 		}
 
 		if (this.data.tilingTexture) {
@@ -3368,33 +3394,34 @@ export default class CanvasEffect extends PIXI.Container {
 		this.sprite.updateDefaultScaling()
 	}
 
-	async _transformStretchToAttachedSprite() {
-		try {
-			// Recomputing switches the sprite to the matching distance file and redoes the scaling, every frame.
-			// Skip while neither end has moved. Keep running while animations play on this effect, because
-			// recomputing overwrites the sprite scale they may animate (existing behaviour).
-			const source = this.sourcePosition;
-			const target = this.targetPosition;
-			const last = this._lastStretchState;
-			if (
-				last
-				&& last.initialization === this._initialization
-				&& last.sprite === this.sprite
-				&& last.sx === source?.x && last.sy === source?.y
-				&& last.tx === target?.x && last.ty === target?.y
-				&& !SequencerAnimationEngine.hasAnimations(this.id)
-			) return;
-			this._lastStretchState = {
-				initialization: this._initialization,
-				sprite: this.sprite,
-				sx: source?.x, sy: source?.y,
-				tx: target?.x, ty: target?.y,
-			};
-			await this._applyDistanceScaling();
-			this._setAnchors()
-		} catch (err) {
-			//lib.debug_error(err);
-		}
+	_transformStretchToAttachedSprite() {
+		// Skip while neither end has moved and the right distance file is active. Keep running while
+		// animations play on this effect, because stretching overwrites the sprite scale they may animate.
+		const source = this.sourcePosition;
+		const target = this.targetPosition;
+		const last = this._lastStretchState;
+		if (
+			last
+			&& last.initialization === this._initialization
+			&& last.sprite === this.sprite
+			&& last.activePath === this.sprite.activePath
+			&& (!this._currentFilePath || this.sprite.activePath === this._currentFilePath)
+			&& last.sx === source?.x && last.sy === source?.y
+			&& last.tx === target?.x && last.ty === target?.y
+			&& !SequencerAnimationEngine.hasAnimations(this.id)
+		) return;
+		this._lastStretchState = {
+			initialization: this._initialization,
+			sprite: this.sprite,
+			activePath: this.sprite.activePath,
+			sx: source?.x, sy: source?.y,
+			tx: target?.x, ty: target?.y,
+		};
+		const pendingVariant = this._applyDistanceScaling();
+		this._setAnchors();
+		pendingVariant?.catch((err) => {
+			lib.debug_error("stretchTo file variant activation threw", err);
+		});
 	}
 
 	_transformNoStretchSprite() {

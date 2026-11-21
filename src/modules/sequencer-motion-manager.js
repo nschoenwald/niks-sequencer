@@ -22,6 +22,8 @@ class Motion {
 		this.name = config.name ?? null;
 		this.persist = !!config.persist;
 		this.persistUntilUpdate = !!config.persistUntilUpdate;
+		this.tiedDocuments = config.tiedDocuments ?? [];
+		this.tiedDocumentHooks = [];
 		this.zIndex = config.zIndex ?? null;
 		this.done = false;
 		this.returnTriggeredAt = undefined;
@@ -35,11 +37,12 @@ class Motion {
 			this._resolveFinished = resolve;
 		});
 		this.oscillate = config.oscillate ?? [];
+		const seed = config.seed ?? config.creationTimestamp;
 		this.noise = (config.noise ?? []).map((noise, noiseIndex) => ({
 			...noise,
 			waveform: canvaslib.buildNoiseWaveform(
 				noise,
-				lib.createMersenneTwister(config.creationTimestamp + noiseIndex)
+				lib.createMersenneTwister(seed + noiseIndex)
 			),
 		}));
 
@@ -360,6 +363,29 @@ class Motion {
 	_finish() {
 		this._resolveFinished();
 		SequenceManager.RunningMotions.delete(this._id);
+		this._removeTiedDocumentHooks();
+	}
+
+	_addTiedDocumentHooks() {
+		for (const tiedDocumentUuid of this.tiedDocuments) {
+			const tiedDocument = fromUuidSync(tiedDocumentUuid);
+			if (!tiedDocument) continue;
+			const hookName = "delete" + tiedDocument.documentName;
+			const hookId = Hooks.on(hookName, (doc) => {
+				if (doc.uuid !== tiedDocumentUuid) return;
+				const aggregator = MOTION_REGISTRY.get(this.uuid);
+				if (!aggregator?.motions.has(this)) return;
+				SequencerMotionManager._endMotion(aggregator, this, 0);
+			});
+			this.tiedDocumentHooks.push([hookName, hookId]);
+		}
+	}
+
+	_removeTiedDocumentHooks() {
+		for (const [hookName, hookId] of this.tiedDocumentHooks) {
+			Hooks.off(hookName, hookId);
+		}
+		this.tiedDocumentHooks = [];
 	}
 
 	/**
@@ -689,6 +715,12 @@ export default class SequencerMotionManager {
 				motionsToRemove[uuid] = motions;
 				continue;
 			}
+			const staleMotionIds = motions
+				.filter(([, motionData]) => SequencerMotionManager._hasDeletedTiedDocument(motionData))
+				.map(([motionId]) => motionId);
+			if (staleMotionIds.length) {
+				flagManager.removeFlags(uuid, { motions: staleMotionIds });
+			}
 			if (doc.parent?.id && doc.parent.id !== canvas.scene?.id) continue;
 			// Read through getMotionFlags so any registered motion
 			// migrations run before resurrection, matching how
@@ -736,10 +768,16 @@ export default class SequencerMotionManager {
 		return SequencerMotionManager._startMotion(data);
 	}
 
+	static _hasDeletedTiedDocument(data) {
+		return (data.tiedDocuments ?? []).some((tiedDocumentUuid) => !fromUuidSync(tiedDocumentUuid));
+	}
+
 	static _startMotion(data) {
 		const noop = { duration: 0, finished: Promise.resolve() };
 		if (game.user.viewedScene !== data.sceneId) return noop;
 		if (Array.isArray(data.users) && data.users.length && !data.users.includes(game.userId)) return noop;
+
+		if (SequencerMotionManager._hasDeletedTiedDocument(data)) return noop;
 
 		const document = fromUuidSync(data.uuid);
 		const placeable = document?.object ?? null;
@@ -756,6 +794,7 @@ export default class SequencerMotionManager {
 
 		const motion = new Motion(data, aggregator.restState, aggregator.meshOriginOffset);
 		aggregator.addMotion(motion);
+		motion._addTiedDocumentHooks();
 		SequenceManager.RunningMotions.add(motion._id, { id: motion._id, data });
 		return { duration: data.overallDuration ?? 0, finished: motion.finished };
 	}
@@ -866,32 +905,34 @@ export default class SequencerMotionManager {
 			for (const motion of [...aggregator.motions]) {
 				if (data.sequenceId && motion.sequenceId !== data.sequenceId) continue;
 				if (data.name && motion.name !== data.name) continue;
-
-				if (motion.persist) {
-					// Remove the flag now, not when the settle animation
-					// finishes. `endMotions` is the "this has ended" signal;
-					// a reload mid-settle must not resurrect it. The
-					// in-memory return leg still plays for the visual, and
-					// the tick removes the motion from the set when
-					// `sampleAt` returns null.
-					motion._removeFlag(aggregator.uuid);
-					motion.triggerReturn(data.settle);
-				} else if (motion.persistUntilUpdate) {
-					// No return leg; endMotions is "cancel the hold now."
-					aggregator.motions.delete(motion);
-					motion._finish();
-					motion._removeFlag(aggregator.uuid);
-				} else if (data.settle > 0 && motionHasReturningTracks(motion)) {
-					motion.triggerReturn(data.settle);
-				} else {
-					aggregator.motions.delete(motion);
-					motion._finish();
-					motion._removeFlag(aggregator.uuid);
-				}
+				SequencerMotionManager._endMotion(aggregator, motion, data.settle);
 				count++;
 			}
 		}
 		return count;
+	}
+
+	/**
+	 * Ends one motion locally.
+	 */
+	static _endMotion(aggregator, motion, settle) {
+		if (motion.persist) {
+			// Flag goes before the return leg so a reload mid-return
+			// cannot resurrect the motion.
+			motion._removeFlag(aggregator.uuid);
+			motion.triggerReturn(settle);
+		} else if (motion.persistUntilUpdate) {
+			// Ends without a return leg.
+			aggregator.motions.delete(motion);
+			motion._finish();
+			motion._removeFlag(aggregator.uuid);
+		} else if (settle > 0 && motionHasReturningTracks(motion)) {
+			motion.triggerReturn(settle);
+		} else {
+			aggregator.motions.delete(motion);
+			motion._finish();
+			motion._removeFlag(aggregator.uuid);
+		}
 	}
 
 	/**

@@ -17,6 +17,7 @@ export default class MotionSection extends Section {
 		this._originObject = null;
 		this._persist = false;
 		this._persistUntilUpdate = false;
+		this._tiedDocuments = [];
 		this._zIndex = null;
 		this._tracks = {
 			x: [],
@@ -29,6 +30,7 @@ export default class MotionSection extends Section {
 		this._noise = [];
 		this._oscillate = [];
 		this._resolvedTracks = null;
+		this._deserializedData = null;
 		if (inTarget) this.on(inTarget);
 	}
 
@@ -95,6 +97,50 @@ export default class MotionSection extends Section {
 				"`.persistUntilUpdate()` and `.persist()` are mutually exclusive; pick one persistence mode."
 			);
 		this._persistUntilUpdate = true;
+		return this;
+	}
+
+	/**
+	 * Ties the motion to any number of documents in Foundry. When any of them is deleted, the motion ends.
+	 *
+	 * @param {String|PlaceableObject|foundry.abstract.Document|Array<String|PlaceableObject|foundry.abstract.Document>} inDocuments
+	 *   - a document UUID string, a placeable (such as a Token), a document (such as an ActiveEffect or Item), or an array of these
+	 * @returns {MotionSection}
+	 */
+	tieToDocuments(inDocuments) {
+		if (!Array.isArray(inDocuments)) {
+			inDocuments = [inDocuments];
+		}
+		for (let doc of inDocuments) {
+			if (
+				typeof doc !== "string" &&
+				!(doc instanceof foundry.canvas.placeables.PlaceableObject) &&
+				!(doc instanceof foundry.abstract.Document)
+			) {
+				throw this.sequence._customError(
+					this,
+					"tieToDocuments",
+					"inDocuments must be of type string, PlaceableObject, or Document, or an array thereof"
+				);
+			}
+			if (typeof doc === "string") {
+				if (!fromUuidSync(doc))
+					throw this.sequence._customError(
+						this,
+						"tieToDocuments",
+						`could not find document with UUID "${doc}"`
+					);
+			} else {
+				doc = lib.validate_document(doc)?.uuid;
+				if (!doc)
+					throw this.sequence._customError(
+						this,
+						"tieToDocuments",
+						"could not find the UUID for the given object"
+					);
+			}
+			this._tiedDocuments.push(doc);
+		}
 		return this;
 	}
 
@@ -486,16 +532,21 @@ export default class MotionSection extends Section {
 
 	/**
 	 * Moves the sprite toward `inTarget`. Pass a single position
-	 * (`{x, y}` / placeable / document / name reference) for a single-target
-	 * animation, or an array of waypoints for a keyframed path.
+	 * (`{x, y}` / placeable / document / crosshair / string) for a
+	 * single-target animation, or an array of waypoints for a keyframed path.
 	 *
-	 * When the target is a placeable, document, or name reference, its
-	 * position is read at the moment this method is called, and includes
-	 * any motion currently displacing it: moving toward a token that is
-	 * itself flying via a `.motion()` lands on where it visually appears,
-	 * not on its document position. Pass `ignoreMotion: true` to target the
-	 * document position instead (e.g. the ground beneath a flying token). A
-	 * literal `{x, y}` is used as given.
+	 * A string is the name, ID, or UUID of an object on the scene, or a name
+	 * from `.name()` or `Sequence.addNamedLocation()` earlier in the
+	 * sequence. A name keeps the offsets it was given (`offset`,
+	 * `randomOffset`, `.missed()`), so the sprite lands where an effect
+	 * played at that name would.
+	 *
+	 * When the target is a placeable, document, or a name for one, its
+	 * position includes any motion currently displacing it: moving toward a
+	 * token that is itself flying via a `.motion()` lands on where it
+	 * visually appears, not on its document position. Pass
+	 * `ignoreMotion: true` to target the document position instead (e.g. the
+	 * ground beneath a flying token). A literal `{x, y}` is used as given.
 	 *
 	 * Required: `duration` (ms).
 	 * Optional: `ease`, `delay`, `return` (default true), `easeOut`,
@@ -620,6 +671,7 @@ export default class MotionSection extends Section {
 
 		let validatedTarget = null;
 		let attachToUuid = null;
+		let namedTarget = null;
 		if (!isKeyframe) {
 			validatedTarget = this._validateLocation(inTarget);
 			if (!validatedTarget)
@@ -629,87 +681,20 @@ export default class MotionSection extends Section {
 					"could not resolve a position from inTarget"
 				);
 
-			const isCrosshair =
-				validatedTarget instanceof CrosshairsPlaceable
-				|| validatedTarget instanceof CrosshairsDocument;
-
-			if (isCrosshair) {
-				if (options.attachTo)
-					throw this.sequence._customError(
-						this,
-						"moveTo",
-						"`attachTo: true` cannot follow a crosshair; a crosshair is a one-time placement, not a placeable that keeps moving."
-					);
+			if (typeof validatedTarget === "string") {
 				if (options.gridUnits)
 					throw this.sequence._customError(
 						this,
 						"moveTo",
-						"`gridUnits` only applies to a literal {x, y} target; a crosshair already resolves to an absolute position."
+						"`gridUnits` only applies to a literal {x, y} target; a named location already resolves to an absolute position."
 					);
-
-				const crosshairDoc = validatedTarget.document ?? validatedTarget;
-				const orientation = crosshairDoc.getOrientation().source;
-				if (!lib.is_real_number(orientation?.x) || !lib.is_real_number(orientation?.y))
-					throw this.sequence._customError(
-						this,
-						"moveTo",
-						"could not resolve a position from the given crosshair"
-					);
-				const halfSize = canvaslib.get_object_dimensions(this._originObject, true);
-				validatedTarget = {
-					x: orientation.x - halfSize.width,
-					y: orientation.y - halfSize.height,
-				};
-			}
-
-			const isPlaceableOrDocument =
-				!isCrosshair
-				&& (validatedTarget instanceof foundry.canvas.placeables.PlaceableObject
-					|| validatedTarget instanceof foundry.abstract.Document);
-
-			if (options.attachTo && !isPlaceableOrDocument)
-				throw this.sequence._customError(
-					this,
-					"moveTo",
-					"`attachTo: true` requires a placeable, document, or named-object target to follow; a literal {x, y} has nothing to attach to."
-				);
-
-			if (isPlaceableOrDocument) {
-				if (options.gridUnits)
-					throw this.sequence._customError(
-						this,
-						"moveTo",
-						"`gridUnits` only applies to a literal {x, y} target; a placeable, document, or named object already resolves to an absolute position."
-					);
-				attachToUuid =
-					validatedTarget.document?.uuid ?? validatedTarget.uuid ?? null;
-				if (options.attachTo && !attachToUuid)
-					throw this.sequence._customError(
-						this,
-						"moveTo",
-						"`attachTo: true` could not resolve a uuid from the given target"
-					);
-
-				const resolved = canvaslib.get_object_position(validatedTarget, {
-					exact: true,
-					ignoreMotion: options.ignoreMotion,
-				});
-				if (!lib.is_real_number(resolved?.x) || !lib.is_real_number(resolved?.y))
-					throw this.sequence._customError(
-						this,
-						"moveTo",
-						"could not resolve a position from inTarget"
-					);
-				validatedTarget = { x: resolved.x, y: resolved.y };
-			} else if (
-				!lib.is_real_number(validatedTarget?.x)
-				|| !lib.is_real_number(validatedTarget?.y)
-			) {
-				throw this.sequence._customError(
-					this,
-					"moveTo",
-					"inTarget must be an {x, y} coordinate, a placeable, a document, or the name of a placed object"
-				);
+				namedTarget = validatedTarget;
+				validatedTarget = {};
+			} else {
+				({ position: validatedTarget, attachToUuid } = this._resolveMoveToTarget(
+					validatedTarget,
+					options
+				));
 			}
 		}
 
@@ -719,6 +704,13 @@ export default class MotionSection extends Section {
 		const yConfig = isKeyframe
 			? this._buildKeyframeTrack("moveTo", inTarget, options, "y")
 			: this._buildSingleTrack("moveTo", validatedTarget, options, "y");
+
+		if (namedTarget) {
+			for (let config of [xConfig, yConfig]) {
+				config.namedTarget = namedTarget;
+				config.namedTargetIgnoreMotion = options.ignoreMotion;
+			}
+		}
 
 		if (!isKeyframe && options.attachTo) {
 			xConfig.attached = true;
@@ -739,6 +731,108 @@ export default class MotionSection extends Section {
 		this._tracks.x.push(xConfig);
 		this._tracks.y.push(yConfig);
 		return this;
+	}
+
+	/**
+	 * @private
+	 *
+	 * Turns a resolved `.moveTo()` target into the document-space position the
+	 * sprite moves to, plus the uuid `attachTo: true` follows. Crosshairs, and
+	 * `{x, y}` targets when `pointIsCenter` is set, land the sprite centered on
+	 * the point.
+	 */
+	_resolveMoveToTarget(target, options, { pointIsCenter = false } = {}) {
+		let isCrosshair =
+			target instanceof CrosshairsPlaceable
+			|| target instanceof CrosshairsDocument;
+
+		if (isCrosshair) {
+			if (options.attachTo)
+				throw this.sequence._customError(
+					this,
+					"moveTo",
+					"`attachTo: true` cannot follow a crosshair; a crosshair is a one-time placement, not a placeable that keeps moving."
+				);
+			if (options.gridUnits)
+				throw this.sequence._customError(
+					this,
+					"moveTo",
+					"`gridUnits` only applies to a literal {x, y} target; a crosshair already resolves to an absolute position."
+				);
+
+			let crosshairDoc = target.document ?? target;
+			let orientation = crosshairDoc.getOrientation().source;
+			if (!lib.is_real_number(orientation?.x) || !lib.is_real_number(orientation?.y))
+				throw this.sequence._customError(
+					this,
+					"moveTo",
+					"could not resolve a position from the given crosshair"
+				);
+			return { position: this._centerOn(orientation), attachToUuid: null };
+		}
+
+		let isPlaceableOrDocument =
+			target instanceof foundry.canvas.placeables.PlaceableObject
+			|| target instanceof foundry.abstract.Document;
+
+		if (options.attachTo && !isPlaceableOrDocument)
+			throw this.sequence._customError(
+				this,
+				"moveTo",
+				pointIsCenter
+					? "`attachTo: true` cannot follow this named location; it is a fixed position, not a placeable that keeps moving."
+					: "`attachTo: true` requires a placeable, document, or named-object target to follow; a literal {x, y} has nothing to attach to."
+			);
+
+		if (isPlaceableOrDocument) {
+			if (options.gridUnits)
+				throw this.sequence._customError(
+					this,
+					"moveTo",
+					"`gridUnits` only applies to a literal {x, y} target; a placeable, document, or named object already resolves to an absolute position."
+				);
+			let attachToUuid = target.document?.uuid ?? target.uuid ?? null;
+			if (options.attachTo && !attachToUuid)
+				throw this.sequence._customError(
+					this,
+					"moveTo",
+					"`attachTo: true` could not resolve a uuid from the given target"
+				);
+
+			let resolved = canvaslib.get_object_position(target, {
+				exact: true,
+				ignoreMotion: options.ignoreMotion,
+			});
+			if (!lib.is_real_number(resolved?.x) || !lib.is_real_number(resolved?.y))
+				throw this.sequence._customError(
+					this,
+					"moveTo",
+					"could not resolve a position from inTarget"
+				);
+			return { position: { x: resolved.x, y: resolved.y }, attachToUuid };
+		}
+
+		if (!lib.is_real_number(target?.x) || !lib.is_real_number(target?.y))
+			throw this.sequence._customError(
+				this,
+				"moveTo",
+				"inTarget must be an {x, y} coordinate, a placeable, a document, a crosshair, or a name"
+			);
+		let position = pointIsCenter ? this._centerOn(target) : { x: target.x, y: target.y };
+		return { position, attachToUuid: null };
+	}
+
+	/**
+	 * @private
+	 *
+	 * The document-space position that centers the moving object on `point`.
+	 */
+	_centerOn(point) {
+		let halfSize = canvaslib.get_object_dimensions(this._originObject, true);
+		return {
+			x: point.x - halfSize.width,
+			y: point.y - halfSize.height,
+		};
 	}
 
 	/**
@@ -2320,66 +2414,22 @@ export default class MotionSection extends Section {
 	 * @private
 	 *
 	 * Waits for the target token's mesh to draw, resolves any snapshot-mode
-	 * `towards` / `awayFrom` tracks against play-time positions, then
-	 * registers any `.name()` entry on the sequence's nameOffsetMap.
+	 * `towards` / `awayFrom` tracks and named `.moveTo()` targets against
+	 * play-time positions, then registers any `.name()` entry on the
+	 * sequence's nameOffsetMap.
 	 * Runs once per repetition, so each repetition re-snapshots its
 	 * direction.
 	 */
-	/**
-	 * Serializes the builder state so the section can be sent to other clients (`.play({ remote: true })`).
-	 * Tracks, noise and oscillate entries are plain data (they are stored in flags for persistent motions);
-	 * the target is sent as its uuid. Play-time resolution (snapshot directions, scaled strengths) happens
-	 * on each client in `preRun()` / `run()`.
-	 *
-	 * @returns {Promise<object>}
-	 * @private
-	 */
-	async _serialize() {
-		const data = await super._serialize();
-		const origin = this._originObject?.document ?? this._originObject;
-		return {
-			...data,
-			type: "motion",
-			sectionData: foundry.utils.deepClone({
-				origin: origin?.uuid ?? null,
-				persist: this._persist,
-				persistUntilUpdate: this._persistUntilUpdate,
-				zIndex: this._zIndex,
-				tracks: this._tracks,
-				noise: this._noise,
-				oscillate: this._oscillate,
-				name: this._name,
-				users: this._users ? [...this._users] : null,
-			}),
-		};
-	}
-
-	/**
-	 * @param {object} data
-	 * @returns {MotionSection}
-	 * @private
-	 */
-	_deserialize(data) {
-		const sectionData = data.sectionData;
-		this._originObject = sectionData.origin ? fromUuidSync(sectionData.origin) : null;
-		this._persist = sectionData.persist;
-		this._persistUntilUpdate = sectionData.persistUntilUpdate;
-		this._zIndex = sectionData.zIndex;
-		this._tracks = sectionData.tracks;
-		this._noise = sectionData.noise;
-		this._oscillate = sectionData.oscillate;
-		this._name = sectionData.name;
-		this._users = sectionData.users;
-		return super._deserialize(data);
-	}
-
 	async preRun() {
+		if (this._deserializedData) return;
 		await this._waitForTokenMesh(this._originObject);
 
 		const placeable = this._originObject?.object ?? this._originObject;
 		const moverUuid = placeable?.document?.uuid ?? placeable?.uuid ?? null;
 		if (placeable && moverUuid) {
-			this._resolvedTracks = this._resolveTowardsForRun(placeable, moverUuid);
+			this._resolvedTracks = this._resolveNamedTargetsForRun(
+				this._resolveTowardsForRun(placeable, moverUuid)
+			);
 		} else {
 			this._resolvedTracks = this._tracks;
 		}
@@ -2458,6 +2508,39 @@ export default class MotionSection extends Section {
 	 * @private
 	 */
 	async run() {
+		const data = this._deserializedData
+			? {
+				...this._deserializedData,
+				_id: foundry.utils.randomID(),
+				creationTimestamp: Date.now(),
+				seed: this._deserializedData.creationTimestamp
+					+ this._currentRepetition * this._deserializedData.noise.length,
+			}
+			: this._buildMotionData();
+
+		const push = !this.sequence.local && !this.sequence.remote;
+		const { finished } = SequencerMotionManager.startMotion(data, push);
+
+		const persistent = data.persist || data.persistUntilUpdate;
+		if (persistent) {
+			await finished;
+			if (this._currentWaitTime > 0) {
+				await new Promise((resolve) => setTimeout(resolve, this._currentWaitTime));
+			}
+			return;
+		}
+		return new Promise((resolve) => {
+			setTimeout(resolve, data.overallDuration + this._currentWaitTime);
+		});
+	}
+
+	/**
+	 * @private
+	 *
+	 * Validates the section and builds the motion payload for one
+	 * repetition. Expects `preRun()` to have resolved the tracks first.
+	 */
+	_buildMotionData() {
 		this._expressWarnings();
 
 		const placeable = this._originObject?.object ?? this._originObject;
@@ -2488,7 +2571,7 @@ export default class MotionSection extends Section {
 		const resolvedTracks = this._resolvedTracks;
 		this._resolvedTracks = null;
 
-		const data = {
+		return {
 			_id: motionId,
 			flagVersion: flagManager.latestMotionFlagVersion,
 			sceneId: game.user.viewedScene,
@@ -2500,6 +2583,7 @@ export default class MotionSection extends Section {
 			name: this._name || null,
 			persist: this._persist,
 			persistUntilUpdate: this._persistUntilUpdate,
+			tiedDocuments: Array.from(new Set(this._tiedDocuments)),
 			zIndex: this._zIndex,
 			tracks: resolvedTracks,
 			noise: resolvedNoise,
@@ -2507,21 +2591,22 @@ export default class MotionSection extends Section {
 			overallDuration,
 			creationTimestamp,
 		};
+	}
 
-		const push = !this.sequence.local && !this.sequence.remote;
-		const { finished } = SequencerMotionManager.startMotion(data, push);
+	async _serialize() {
+		const data = await super._serialize();
+		await this.preRun();
+		const sectionData = this._buildMotionData();
+		return {
+			...data,
+			type: "motion",
+			sectionData,
+		};
+	}
 
-		const persistent = this._persist || this._persistUntilUpdate;
-		if (persistent) {
-			await finished;
-			if (this._currentWaitTime > 0) {
-				await new Promise((resolve) => setTimeout(resolve, this._currentWaitTime));
-			}
-			return;
-		}
-		return new Promise((resolve) => {
-			setTimeout(resolve, overallDuration + this._currentWaitTime);
-		});
+	async _deserialize(data) {
+		this._deserializedData = data.sectionData;
+		return super._deserialize(data);
 	}
 
 	/**
@@ -2650,6 +2735,89 @@ export default class MotionSection extends Section {
 			...this._tracks,
 			x: this._tracks.x.map(resolveSnapshotTrack),
 			y: this._tracks.y.map(resolveSnapshotTrack),
+		};
+	}
+
+	/**
+	 * @private
+	 *
+	 * Resolves `.moveTo()` tracks whose target is a name given to an earlier
+	 * section (or `Sequence.addNamedLocation()`) into plain position tracks.
+	 * `.name()` entries only exist once the sequence plays, so this runs at
+	 * play time. The name's offsets are added the same way an effect at that
+	 * name adds them. Returns a new payload and leaves `tracks` tagged, so
+	 * each repetition resolves the name again.
+	 */
+	_resolveNamedTargetsForRun(tracks) {
+		let hasNamedTargets =
+			tracks.x.some((track) => track.namedTarget)
+			|| tracks.y.some((track) => track.namedTarget);
+		if (!hasNamedTargets) return tracks;
+
+		let resolveNamedTrack = (track, axis) => {
+			if (!track.namedTarget) return track;
+
+			let namedLocation = this._resolveNamedLocation(track.namedTarget);
+			let { position, attachToUuid } = this._resolveMoveToTarget(
+				namedLocation.anchor,
+				{
+					attachTo: track.attached,
+					ignoreMotion: track.namedTargetIgnoreMotion,
+				},
+				{ pointIsCenter: true }
+			);
+
+			let resolved = { ...track, to: position[axis] + namedLocation.offset[axis] };
+			if (track.attached) {
+				resolved.attachToUuid = attachToUuid;
+				resolved.attachOffset = namedLocation.offset[axis];
+			}
+			delete resolved.namedTarget;
+			delete resolved.namedTargetIgnoreMotion;
+			return resolved;
+		};
+
+		return {
+			...tracks,
+			x: tracks.x.map((track) => resolveNamedTrack(track, "x")),
+			y: tracks.y.map((track) => resolveNamedTrack(track, "y")),
+		};
+	}
+
+	/**
+	 * @private
+	 *
+	 * Looks up a name on the sequence and returns the object or point it
+	 * resolves to (`anchor`), and the summed offsets an effect at that name
+	 * would add to it (`offset`). Leaves the sequence's name entry untouched.
+	 */
+	_resolveNamedLocation(name) {
+		let entry = this.sequence.nameOffsetMap?.[name];
+		if (!entry)
+			throw this.sequence._customError(
+				this,
+				"moveTo",
+				`could not find an object or named location called "${name}"`
+			);
+
+		let namedLocation = {
+			...entry,
+			...canvaslib.resolve_named_location(entry, {
+				repetition: this._currentRepetition,
+				sceneId: game.user.viewedScene,
+			}),
+		};
+		let anchor = namedLocation.targetObj || namedLocation.sourceObj;
+		if (!anchor)
+			throw this.sequence._customError(
+				this,
+				"moveTo",
+				`could not resolve a position from the named location "${name}"`
+			);
+
+		return {
+			anchor,
+			offset: canvaslib.get_named_location_offset(namedLocation),
 		};
 	}
 

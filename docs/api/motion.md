@@ -150,6 +150,7 @@ Examples:
 .moveTo({ x: 500, y: 300 }, { duration: 600 })
 .moveTo(otherToken, { duration: 400, ease: "easeOutQuad" })
 .moveTo(otherToken, { duration: 1500, ease: "easeInOutQuad", attachTo: true })
+.moveTo("impact", { duration: 400 })
 .moveTo(
     { x: 500, y: 0 },
     { duration: 400, return: false }
@@ -172,12 +173,12 @@ Moves the sprite toward the given target. The first argument can be:
 - An `{ x, y }` coordinate object
 - A placeable or its document (a Token, Tile, Drawing, etc.), whose position is read when the section is built
 - A crosshair from [`Sequencer.Crosshair.show()`](crosshair.md), which lands the moving object centered on the crosshair, the same way an effect targeting a crosshair is centered on it
-- A string reference (see [`.name()`](#name) on other sections) that refers to a previously placed object
+- A string: the name, ID, or UUID of an object on the scene, or a name from [`.name()`](#name) or `.addNamedLocation()` earlier in the sequence. A name keeps the offsets it was given (`offset`, `randomOffset`, `.missed()`), so the moving object lands where an effect played at that name would
 - An array of waypoints - the sprite travels through each point in order
 
 Coordinates are the same coordinates you'd pass to `token.document.update({ x, y })`. The motion handles the conversion to the sprite's internal position automatically.
 
-When the target is a placeable, document, or name reference, its position **includes any motion currently displacing it**. If you move a token toward another token that is itself flying via a `.motion()`, it lands on where that token visually appears, not on its document position. Pass `ignoreMotion: true` in the options to target the document position instead, for example when moving a token to the ground directly beneath a flying token. The position is read once, at the moment `.moveTo()` is called; it does not keep tracking the target if the target moves afterward. Pass `attachTo: true` (below) to keep tracking a moving target frame by frame instead. A plain `{ x, y }` coordinate is used exactly as given.
+When the target is a placeable, document, or name reference, its position **includes any motion currently displacing it**. If you move a token toward another token that is itself flying via a `.motion()`, it lands on where that token visually appears, not on its document position. Pass `ignoreMotion: true` in the options to target the document position instead, for example when moving a token to the ground directly beneath a flying token. The position is read once, when `.moveTo()` is called (or, for a name from earlier in the sequence, when the motion plays), and is not tracked afterward. Pass `attachTo: true` (below) to keep tracking a moving target frame by frame instead. A plain `{ x, y }` coordinate is used exactly as given.
 
 ### Single-target form options
 
@@ -488,6 +489,25 @@ The update that ends the motion is a change to the placeable's **position or rot
 The hold works with any combination of motions, so it also serves as a general "until this thing moves" trigger: a token tinted red until it takes its turn and moves, or one enlarged until it's repositioned. The no-snap handoff only covers position and rotation, the things a document update can land on. Held scale, opacity, or tint changes return to normal instantly when the update arrives, since the document has nothing to catch them.
 
 Cannot be combined with [`.persist()`](#persist) - use one or the other.
+
+## Tie To Documents
+
+`.tieToDocuments(token)` or `.tieToDocuments([ActiveEffect, Token])`
+
+Ties the motion to any number of documents in Foundry - if those get deleted, the motion is ended the same way as calling `Sequencer.MotionManager.endMotions()` on it. Accepts UUID strings, placeables, and documents, or an array of them.
+
+Most useful with [`.persist()`](#persist), for example a token floating for as long as a spell's Active Effect is on it:
+
+```js
+new Sequence()
+    .motion()
+        .on(token)
+        .moveBy({ y: -50 }, { duration: 800, return: false })
+        .oscillate({ period: 2000, waveform: "sine", y: { amplitude: 6 } })
+        .persist()
+        .tieToDocuments(activeEffect)
+    .play()
+```
 
 ## Noise
 

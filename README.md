@@ -1,10 +1,10 @@
 # Nik's Sequencer
 
-A maintained fork of [Sequencer](https://github.com/fantasycalendar/FoundryVTT-Sequencer) by [Fantasy Computerworks](http://fantasycomputer.works/), with bug fixes and performance improvements on top of Sequencer 4.3.0.
+A maintained fork of [Sequencer](https://github.com/fantasycalendar/FoundryVTT-Sequencer) by [Fantasy Computerworks](http://fantasycomputer.works/), with bug fixes and performance improvements on top of Sequencer 4.3.1.
 
 - **Same module id (`sequencer`).** Modules that depend on Sequencer (Automated Animations, Trigger Animations and many more) work with it unchanged. It replaces Sequencer: install one or the other, not both.
 - **Same API and documentation.** Everything in the [Sequencer wiki](https://fantasycomputer.works/FoundryVTT-Sequencer/) applies.
-- **Versions** are the upstream version plus `.nX` (for example `4.3.0.n5`). See the [changelog](CHANGELOG.md) for what changed.
+- **Versions** are the upstream version plus `.nX` (for example `4.3.1.n1`). See the [changelog](CHANGELOG.md) for what changed.
 
 ## Installation
 
@@ -18,10 +18,15 @@ To go back to the original, uninstall this fork and install Sequencer from the F
 
 ## What this fork changes
 
-- Fixes for open upstream bug reports, among them: persistent effects and sounds placed on a scene location not coming back after a reload, located sounds staying silent on Foundry V14, `.alwaysForGMs()` ignoring `.volume()`, `.crosshair().persist()` on V14, `bindVisibility` on templates and regions, VP9 spritesheet conversion hanging in Chrome, `.waitUntilFinished()` not waiting for token fades.
-- Rendering optimizations (can be turned off with the **Enable Rendering Optimizations** setting): mask caching, skipping effects with filters or masks while off-screen, no video uploads for hidden or off-screen video effects.
-- Less work per frame: sounds placed on the canvas, attached `.stretchTo()` effects, effect animations, hooks for attached objects, video visibility checks, `.motion()` and reading saved persistent effects.
-- `.motion()` sections can be played with `.play({ remote: true })`.
+Compared to Sequencer 4.3.1:
+
+- **Sounds:** sounds placed on a token are audible on Foundry V14 without `.alwaysForGMs()`. Located sounds nobody can hear yet start silently, become audible when a listener comes in range and end on time, instead of waiting forever. Players with several tokens hear a sound from the closest one.
+- **Crosshairs:** `.crosshair().persist()` works with later sections on Foundry V14.
+- **Effects:** `bindVisibility` follows hidden templates and regions.
+- **Animations:** token updates sent close together are applied in order, so none get lost.
+- **Spritesheets:** a video decoder failure ends the conversion instead of hanging.
+- **Rendering optimizations** (can be turned off with the **Enable Rendering Optimizations** setting): mask caching, skipping effects with filters or masks while off-screen, no video uploads for hidden or off-screen video effects.
+- **Less work per frame:** sounds placed on the canvas, attached `.stretchTo()` effects, effect animations, hooks for attached objects, video visibility checks, `.motion()` and reading saved persistent effects.
 
 Bug reports for this fork: [issues](https://github.com/nschoenwald/niks-sequencer/issues). Please don't report problems with the fork to the upstream project.
 
